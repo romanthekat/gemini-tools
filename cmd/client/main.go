@@ -105,41 +105,18 @@ func main() {
 			continue
 		}
 
-		conn, err := getConn(link.Host, Port)
+		status, meta, bodyBytes, err := doRequest(linkRaw, Port)
 		if err != nil {
-			fmt.Println("Connection failed:", err)
-			continue
-		}
-		defer conn.Close()
-
-		_, err = conn.Write([]byte(linkRaw + "\r\n"))
-		if err != nil {
-			fmt.Println("Sending request url failed:", err)
+			fmt.Println("request failed:", err)
 			continue
 		}
 
-		reader := bufio.NewReader(conn)
-
-		//20 text/gemini
-		responseHeader, err := reader.ReadString('\n')
-		fields := strings.Fields(responseHeader)
-
-		status, err := strconv.Atoi(fields[0][0:1])
-		meta := fields[1]
-
-		// Switch on status code
 		switch status {
 		case StatusInput, StatusRedirect, StatusClientCertRequired:
-			fmt.Println("Unsupported")
+			fmt.Println("unsupported status:", status)
 		case StatusSuccess:
 			if !strings.HasPrefix(meta, "text/") {
-				fmt.Println("Unsupported type:", meta)
-				continue
-			}
-
-			bodyBytes, err := io.ReadAll(reader)
-			if err != nil {
-				fmt.Println("Body reading failed:", err)
+				fmt.Println("unsupported type:", meta)
 				continue
 			}
 
@@ -186,5 +163,55 @@ func main() {
 		case StatusTemporaryFailure, StatusPermanentFailure:
 			fmt.Println("ERROR:", meta)
 		}
+	}
+}
+
+func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
+	link, err := url.Parse(linkRaw)
+	if err != nil {
+		return status, meta, body,
+			fmt.Errorf("error parsing URL: %w", err)
+	}
+
+	conn, err := getConn(link.Host, port)
+	if err != nil {
+		return status, meta, body, fmt.Errorf("connection failed: %w", err)
+	}
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(linkRaw + "\r\n"))
+	if err != nil {
+		return status, meta, body, fmt.Errorf("sending request url failed: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+
+	//20 text/gemini
+	responseHeader, err := reader.ReadString('\n')
+	fields := strings.Fields(responseHeader)
+
+	status, err = strconv.Atoi(fields[0][0:1])
+	if err != nil {
+		return status, meta, body,
+			fmt.Errorf("response code parsing failed: %w", err)
+	}
+
+	meta = fields[1]
+
+	switch status {
+	case StatusInput, StatusRedirect, StatusTemporaryFailure, StatusPermanentFailure, StatusClientCertRequired:
+		return status, meta, body, nil
+
+	case StatusSuccess:
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return status, meta, body,
+				fmt.Errorf("response body reading failed: %w", err)
+		}
+
+		return status, meta, body, nil
+
+	default:
+		return status, meta, body, fmt.Errorf("unknown response status")
 	}
 }
