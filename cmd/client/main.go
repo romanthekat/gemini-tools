@@ -169,8 +169,7 @@ func main() {
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
 	link, err := url.Parse(linkRaw)
 	if err != nil {
-		return status, meta, body,
-			fmt.Errorf("error parsing URL: %w", err)
+		return status, meta, body, fmt.Errorf("error parsing URL: %w", err)
 	}
 
 	conn, err := getConn(link.Host, port)
@@ -196,8 +195,7 @@ func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err erro
 
 	status, err = strconv.Atoi(fields[0][0:1])
 	if err != nil {
-		return status, meta, body,
-		fmt.Errorf("response code parsing failed: %w", err)
+		return status, meta, body, fmt.Errorf("response code parsing failed: %w", err)
 	}
 
 	meta = fields[1]
@@ -206,16 +204,15 @@ func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err erro
 	case StatusInput, StatusRedirect, StatusTemporaryFailure, StatusPermanentFailure, StatusClientCertRequired:
 		return status, meta, body, nil
 
-		case StatusSuccess:
-			body, err := io.ReadAll(reader)
-			if err != nil {
-				return status, meta, body,
-				fmt.Errorf("response body reading failed: %w", err)
-			}
+	case StatusSuccess:
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return status, meta, body, fmt.Errorf("response body reading failed: %w", err)
+		}
 
-			return status, meta, body, nil
+		return status, meta, body, nil
 
-			default:
-				return status, meta, body, fmt.Errorf("unknown response status")
+	default:
+		return status, meta, body, fmt.Errorf("unknown response status")
 	}
 }
