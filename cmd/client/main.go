@@ -144,9 +144,7 @@ func getUserInput(reader *bufio.Reader) (string, error) {
 	return strings.TrimSpace(input), err
 }
 
-func processUserInput(
-	input string,
-	state *State) (string, bool) {
+func processUserInput(input string, state *State) (string, bool) {
 	linkRaw := ""
 
 	switch input {
