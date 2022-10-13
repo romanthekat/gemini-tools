@@ -15,6 +15,7 @@ import (
 
 const (
 	Port = "1965"
+	MediaType = "text/gemini"
 
 	StatusInput    = 1
 	StatusSuccess  = 2
@@ -122,7 +123,7 @@ func main() {
 
 			body := string(bodyBytes)
 			fmt.Println("meta:", meta)
-			if meta == "text/gemini" {
+			if strings.HasPrefix(meta, MediaType) {
 				links = make([]string, 0, 100)
 				preformatted := false
 
@@ -219,9 +220,8 @@ func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err erro
 	fmt.Println("responseHeader:", responseHeader)
 
 	statusDelim := strings.Index(responseHeader, " ")
-//	responseFields := strings.Fields(responseHeader)
 
-status, err = strconv.Atoi(responseHeader[0:1])
+	status, err = strconv.Atoi(responseHeader[0:1])
 	if err != nil {
 		return status, meta, body, fmt.Errorf("response code parsing failed: %w", err)
 	}
