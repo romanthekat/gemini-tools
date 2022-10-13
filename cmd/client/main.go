@@ -121,6 +121,7 @@ func main() {
 			}
 
 			body := string(bodyBytes)
+			fmt.Println("meta:", meta)
 			if meta == "text/gemini" {
 				links = make([]string, 0, 100)
 				preformatted := false
@@ -209,20 +210,23 @@ func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err erro
 	reader := bufio.NewReader(conn)
 
 	// 20 text/gemini
+	// 20 text/gemini; charset=utf-8
 	responseHeader, err := reader.ReadString('\n')
 	if err != nil {
 		return status, meta, body, fmt.Errorf("response header read failed: %w", err)
 	}
+	responseHeader = strings.TrimSpace(responseHeader)
 	fmt.Println("responseHeader:", responseHeader)
 
-	responseFields := strings.Fields(responseHeader)
+	statusDelim := strings.Index(responseHeader, " ")
+//	responseFields := strings.Fields(responseHeader)
 
-	status, err = strconv.Atoi(responseFields[0][0:1])
+status, err = strconv.Atoi(responseHeader[0:1])
 	if err != nil {
 		return status, meta, body, fmt.Errorf("response code parsing failed: %w", err)
 	}
 
-	meta = responseFields[1]
+	meta = responseHeader[statusDelim+1:]
 
 	switch status {
 	case StatusInput, StatusRedirect,
