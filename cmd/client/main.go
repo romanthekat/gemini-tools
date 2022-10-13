@@ -31,7 +31,7 @@ const (
 	MaxRedirects = 4
 )
 
-func getConn(host, port string) (*tls.Conn, error) {
+func getConn(host, port string) (io.ReadWriteCloser, error) {
 	dialer := &net.Dialer{Timeout: 2 * time.Second}
 
 	conn, err := tls.DialWithDialer(
@@ -208,7 +208,7 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 	}
 }
 
-func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err error) {
+func getResponse(conn io.Reader) (status int, meta string, body []byte, err error) {
 	reader := bufio.NewReader(conn)
 
 	// 20 text/gemini
