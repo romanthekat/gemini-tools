@@ -31,11 +31,19 @@ const (
 	MaxRedirects = 4
 )
 
+type State struct {
+	Links   []string
+	History []string
+}
+
+func (s *State) clearLinks() {
+	s.Links = make([]string, 0, 100)
+}
+
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 
-	links := make([]string, 0, 100)
-	history := make([]string, 0, 100)
+	state := &State{}
 
 	fmt.Println("gemini://url\topen url")
 	fmt.Println("number\t\topen link by number")
@@ -53,7 +61,7 @@ func main() {
 			os.Exit(-1)
 		}
 
-		linkRaw, links, history, doNothing = processUserInput(input, links, history)
+		linkRaw, doNothing = processUserInput(input, state)
 		if doNothing {
 			continue
 		}
@@ -82,7 +90,7 @@ func main() {
 			body := string(bodyBytes)
 			fmt.Println("meta:", meta)
 			if strings.HasPrefix(meta, MediaType) {
-				links = make([]string, 0, 100)
+				state.clearLinks()
 				preformatted := false
 
 				for _, line := range strings.Split(body, "\n") {
@@ -107,8 +115,8 @@ func main() {
 							linkNum = strings.Join(parts[1:], " ")
 						}
 
-						links = append(links, absoluteLink)
-						fmt.Printf("\033[34m[%d] %s\033[0m\n", len(links), linkNum)
+						state.Links = append(state.Links, absoluteLink)
+						fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum)
 					} else {
 						fmt.Println(line)
 					}
@@ -118,7 +126,7 @@ func main() {
 				fmt.Print(body)
 			}
 
-			history = append(history, linkRaw)
+			state.History = append(state.History, linkRaw)
 
 		case StatusTemporaryFailure, StatusPermanentFailure:
 			fmt.Println("ERROR:", meta)
@@ -138,25 +146,24 @@ func getUserInput(reader *bufio.Reader) (string, error) {
 
 func processUserInput(
 	input string,
-	links []string,
-	history []string) (string, []string, []string, bool) {
+	state *State) (string, bool) {
 	linkRaw := ""
 
 	switch input {
 	case "":
-		return "", links, history, true
+		return "", true
 
 	case "q":
 		os.Exit(0)
 
 	case "b":
-		if len(history) < 2 {
+		if len(state.History) < 2 {
 			fmt.Println("\033[31mNo history yet\033[0m")
-			return "", links, history, true
+			return "", true
 		}
 
-		linkRaw = history[len(history)-2]
-		history = history[:len(history)-2]
+		linkRaw = state.History[len(state.History)-2]
+		state.History = state.History[:len(state.History)-2]
 
 	default:
 		index, err := strconv.Atoi(input)
@@ -167,11 +174,11 @@ func processUserInput(
 				linkRaw = Protocol + linkRaw
 			}
 		} else {
-			linkRaw = links[index-1]
+			linkRaw = state.Links[index-1]
 		}
 	}
 
-	return linkRaw, links, history, false
+	return linkRaw, false
 }
 
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
