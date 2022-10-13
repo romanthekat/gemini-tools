@@ -84,7 +84,7 @@ func processResponse(state *State, link *url.URL,
 	status int, meta string, bodyBytes []byte) error {
 	switch status {
 	case StatusInput, StatusRedirect, StatusClientCertRequired:
-		fmt.Println("unsupported status:", status)
+		return fmt.Errorf("unsupported status: %s", meta)
 
 	case StatusSuccess:
 		if !strings.HasPrefix(meta, "text/") {
