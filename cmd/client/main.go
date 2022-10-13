@@ -167,23 +167,42 @@ func main() {
 }
 
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
-	link, err := url.Parse(linkRaw)
-	if err != nil {
-		return status, meta, body, fmt.Errorf("error parsing URL: %w", err)
-	}
+	maxRedirectsLeft := 3
 
-	conn, err := getConn(link.Host, port)
-	if err != nil {
-		return status, meta, body, fmt.Errorf("connection failed: %w", err)
-	}
-	defer conn.Close()
+	for {
+		link, err := url.Parse(linkRaw)
+		if err != nil {
+			return status, meta, body, fmt.Errorf("error parsing URL: %w", err)
+		}
 
-	_, err = conn.Write([]byte(linkRaw + "\r\n"))
-	if err != nil {
-		return status, meta, body, fmt.Errorf("sending request url failed: %w", err)
-	}
+		conn, err := getConn(link.Host, port)
+		if err != nil {
+			return status, meta, body, fmt.Errorf("connection failed: %w", err)
+		}
+		defer conn.Close()
 
-	return getResponse(conn)
+		_, err = conn.Write([]byte(linkRaw + "\r\n"))
+		if err != nil {
+			return status, meta, body, fmt.Errorf("sending request url failed: %w", err)
+		}
+
+		status, meta, body, err = getResponse(conn)
+		if err != nil {
+			return status, meta, body, err
+		}
+
+		if status == StatusRedirect {
+			if maxRedirectsLeft == 0 {
+				return status, meta, body, fmt.Errorf("too many redirects, last url: %s", meta)
+			}
+
+			linkRaw = meta
+			maxRedirectsLeft -= 1
+			continue
+		}
+
+		return status, meta, body, err
+	}
 }
 
 func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err error) {
@@ -194,6 +213,7 @@ func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err erro
 	if err != nil {
 		return status, meta, body, fmt.Errorf("response header read failed: %w", err)
 	}
+	fmt.Println("responseHeader:", responseHeader)
 
 	responseFields := strings.Fields(responseHeader)
 
