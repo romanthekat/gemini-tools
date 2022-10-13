@@ -52,27 +52,22 @@ func main() {
 	fmt.Println()
 
 	for {
-		var linkRaw string
-		var doNothing bool
-
 		input, err := getUserInput(reader)
 		if err != nil {
 			fmt.Println("user input read failed:", err)
 			os.Exit(-1)
 		}
 
-		linkRaw, doNothing = processUserInput(input, state)
+		link, doNothing, err := processUserInput(input, state)
+		if err != nil {
+			fmt.Println("error parsing user input:", err)
+			continue
+		}
 		if doNothing {
 			continue
 		}
 
-		link, err := url.Parse(linkRaw)
-		if err != nil {
-			fmt.Println("error parsing URL:", err)
-			continue
-		}
-
-		status, meta, bodyBytes, err := doRequest(linkRaw, Port)
+		status, meta, bodyBytes, err := doRequest(link)
 		if err != nil {
 			fmt.Println("request failed:", err)
 			continue
@@ -126,7 +121,7 @@ func main() {
 				fmt.Print(body)
 			}
 
-			state.History = append(state.History, linkRaw)
+			state.History = append(state.History, link.String())
 
 		case StatusTemporaryFailure, StatusPermanentFailure:
 			fmt.Println("ERROR:", meta)
@@ -144,12 +139,12 @@ func getUserInput(reader *bufio.Reader) (string, error) {
 	return strings.TrimSpace(input), err
 }
 
-func processUserInput(input string, state *State) (string, bool) {
+func processUserInput(input string, state *State) (*url.URL, bool, error) {
 	linkRaw := ""
 
 	switch input {
 	case "":
-		return "", true
+		return nil, true, nil
 
 	case "q":
 		os.Exit(0)
@@ -157,7 +152,7 @@ func processUserInput(input string, state *State) (string, bool) {
 	case "b":
 		if len(state.History) < 2 {
 			fmt.Println("\033[31mNo history yet\033[0m")
-			return "", true
+			return nil, true, nil
 		}
 
 		linkRaw = state.History[len(state.History)-2]
@@ -176,25 +171,38 @@ func processUserInput(input string, state *State) (string, bool) {
 		}
 	}
 
-	return linkRaw, false
+	link, err := getFullGeminiLink(linkRaw)
+	if err != nil {
+		return nil, false, fmt.Errorf("error generating gemini URL: %w", err)
+	}
+
+	return link, false, nil
 }
 
-func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
+func getFullGeminiLink(linkRaw string) (*url.URL, error) {
+	link, err := url.Parse(linkRaw)
+	if err != nil {
+		return link, fmt.Errorf("error parsing URL: %w", err)
+	}
+
+	if !strings.HasSuffix(link.Host, Port) {
+		link.Host = link.Host + ":" + Port
+	}
+
+	return link, nil
+}
+
+func doRequest(link *url.URL) (status int, meta string, body []byte, err error) {
 	redirectsLeft := MaxRedirects
 
 	for {
-		link, err := url.Parse(linkRaw)
-		if err != nil {
-			return status, meta, body, fmt.Errorf("error parsing URL: %w", err)
-		}
-
-		conn, err := getConn(link.Host, port)
+		conn, err := getConn(link.Host)
 		if err != nil {
 			return status, meta, body, fmt.Errorf("connection failed: %w", err)
 		}
 		defer conn.Close()
 
-		_, err = conn.Write([]byte(linkRaw + "\r\n"))
+		_, err = conn.Write([]byte(link.String() + "\r\n"))
 		if err != nil {
 			return status, meta, body, fmt.Errorf("sending request url failed: %w", err)
 		}
@@ -209,7 +217,11 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 				return status, meta, body, fmt.Errorf("too many redirects, last url: %s", meta)
 			}
 
-			linkRaw = meta
+			link, err = getFullGeminiLink(meta)
+			if err != nil {
+				return status, meta, body, fmt.Errorf("error generating gemini URL: %w", err)
+			}
+
 			redirectsLeft -= 1
 			continue
 		}
@@ -218,12 +230,12 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 	}
 }
 
-func getConn(host, port string) (io.ReadWriteCloser, error) {
+func getConn(addr string) (io.ReadWriteCloser, error) {
 	dialer := &net.Dialer{Timeout: 4 * time.Second}
 
 	conn, err := tls.DialWithDialer(
 		dialer,
-		"tcp", host+":"+port,
+		"tcp", addr,
 		&tls.Config{InsecureSkipVerify: true},
 	)
 
