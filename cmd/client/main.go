@@ -189,19 +189,24 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 func getResponse(conn *tls.Conn) (status int, meta string, body []byte, err error) {
 	reader := bufio.NewReader(conn)
 
-	//20 text/gemini
+	// 20 text/gemini
 	responseHeader, err := reader.ReadString('\n')
-	fields := strings.Fields(responseHeader)
+	if err != nil {
+		return status, meta, body, fmt.Errorf("response header read failed: %w", err)
+	}
 
-	status, err = strconv.Atoi(fields[0][0:1])
+	responseFields := strings.Fields(responseHeader)
+
+	status, err = strconv.Atoi(responseFields[0][0:1])
 	if err != nil {
 		return status, meta, body, fmt.Errorf("response code parsing failed: %w", err)
 	}
 
-	meta = fields[1]
+	meta = responseFields[1]
 
 	switch status {
-	case StatusInput, StatusRedirect, StatusTemporaryFailure, StatusPermanentFailure, StatusClientCertRequired:
+	case StatusInput, StatusRedirect,
+		StatusTemporaryFailure, StatusPermanentFailure, StatusClientCertRequired:
 		return status, meta, body, nil
 
 	case StatusSuccess:
