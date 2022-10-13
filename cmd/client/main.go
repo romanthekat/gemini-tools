@@ -38,10 +38,10 @@ func main() {
 	links := make([]string, 0, 100)
 	history := make([]string, 0, 100)
 
-	fmt.Println("gemini://url - open url")
-	fmt.Println("number - open link by number")
-	fmt.Println("b - go back")
-	fmt.Println("q - quit")
+	fmt.Println("gemini://url\topen url")
+	fmt.Println("number\t\topen link by number")
+	fmt.Println("b\t\tgo back")
+	fmt.Println("q\t\tquit")
 	fmt.Println()
 
 	for {
@@ -51,37 +51,11 @@ func main() {
 			os.Exit(-1)
 		}
 
-		switch input {
-		case "":
-			continue
-
-		case "q":
-			os.Exit(0)
-
-		case "b":
-			if len(history) < 2 {
-				fmt.Println("\033[31mNo history yet\033[0m")
-				continue
-			}
-			linkRaw = history[len(history)-2]
-			history = history[:len(history)-2]
-
-		default:
-			index, err := strconv.Atoi(input)
-			if err != nil {
-				// Treat this as a URL
-				linkRaw = input
-				if !strings.HasPrefix(linkRaw, Protocol) {
-					linkRaw = Protocol + linkRaw
-				}
-			} else {
-				linkRaw = links[index-1]
-			}
-		}
+		linkRaw, links, history = processUserInput(input, history, links)
 
 		link, err := url.Parse(linkRaw)
 		if err != nil {
-			fmt.Println("Error parsing URL:", err)
+			fmt.Println("error parsing URL:", err)
 			continue
 		}
 
@@ -116,7 +90,7 @@ func main() {
 						parts := strings.Fields(line)
 						parsedLink, err := url.Parse(parts[0])
 						if err != nil {
-							fmt.Println("Parsing absoluteLink failed:", err)
+							fmt.Println("parsing absoluteLink failed:", err)
 							continue
 						}
 
@@ -155,6 +129,44 @@ func getUserInput(reader *bufio.Reader) (string, error) {
 	}
 
 	return strings.TrimSpace(input), err
+}
+
+func processUserInput(
+	input string,
+	history []string,
+	links []string) (string, []string, []string) {
+	linkRaw := ""
+
+	switch input {
+	case "":
+		return input, links, history
+
+	case "q":
+		os.Exit(0)
+
+	case "b":
+		if len(history) < 2 {
+			fmt.Println("\033[31mNo history yet\033[0m")
+			return "", links, history
+		}
+
+		linkRaw = history[len(history)-2]
+		history = history[:len(history)-2]
+
+	default:
+		index, err := strconv.Atoi(input)
+		if err != nil {
+			// Treat this as a URL
+			linkRaw = input
+			if !strings.HasPrefix(linkRaw, Protocol) {
+				linkRaw = Protocol + linkRaw
+			}
+		} else {
+			linkRaw = links[index-1]
+		}
+	}
+
+	return linkRaw, links, history
 }
 
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
@@ -197,7 +209,7 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 }
 
 func getConn(host, port string) (io.ReadWriteCloser, error) {
-	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	dialer := &net.Dialer{Timeout: 4 * time.Second}
 
 	conn, err := tls.DialWithDialer(
 		dialer,
@@ -243,6 +255,6 @@ func getResponse(conn io.Reader) (status int, meta string, body []byte, err erro
 		return status, meta, body, nil
 
 	default:
-		return status, meta, body, fmt.Errorf("unknown response status")
+		return status, meta, body, fmt.Errorf("unknown response status: %s", responseHeader)
 	}
 }
