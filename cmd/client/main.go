@@ -28,6 +28,7 @@ const (
 
 	LinkPrefix = "=>"
 	Protocol   = "gemini://"
+	MaxRedirects = 4
 )
 
 func getConn(host, port string) (*tls.Conn, error) {
@@ -169,7 +170,7 @@ func main() {
 }
 
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
-	maxRedirectsLeft := 3
+	redirectsLeft := MaxRedirects
 
 	for {
 		link, err := url.Parse(linkRaw)
@@ -194,12 +195,12 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 		}
 
 		if status == StatusRedirect {
-			if maxRedirectsLeft == 0 {
+			if redirectsLeft == 0 {
 				return status, meta, body, fmt.Errorf("too many redirects, last url: %s", meta)
 			}
 
 			linkRaw = meta
-			maxRedirectsLeft -= 1
+			redirectsLeft -= 1
 			continue
 		}
 
