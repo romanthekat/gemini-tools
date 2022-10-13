@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	Port = "1965"
+	Port      = "1965"
 	MediaType = "text/gemini"
 
 	StatusInput    = 1
@@ -26,32 +26,10 @@ const (
 
 	StatusClientCertRequired = 6
 
-	LinkPrefix = "=>"
-	Protocol   = "gemini://"
+	LinkPrefix   = "=>"
+	Protocol     = "gemini://"
 	MaxRedirects = 4
 )
-
-func getConn(host, port string) (io.ReadWriteCloser, error) {
-	dialer := &net.Dialer{Timeout: 2 * time.Second}
-
-	conn, err := tls.DialWithDialer(
-		dialer,
-		"tcp", host+":"+port,
-		&tls.Config{InsecureSkipVerify: true},
-	)
-
-	return conn, err
-}
-
-func getUserInput(reader *bufio.Reader) (string, error) {
-	fmt.Print("> ")
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(input), err
-}
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
@@ -169,6 +147,16 @@ func main() {
 	}
 }
 
+func getUserInput(reader *bufio.Reader) (string, error) {
+	fmt.Print("> ")
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(input), err
+}
+
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
 	redirectsLeft := MaxRedirects
 
@@ -206,6 +194,18 @@ func doRequest(linkRaw, port string) (status int, meta string, body []byte, err 
 
 		return status, meta, body, err
 	}
+}
+
+func getConn(host, port string) (io.ReadWriteCloser, error) {
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+
+	conn, err := tls.DialWithDialer(
+		dialer,
+		"tcp", host+":"+port,
+		&tls.Config{InsecureSkipVerify: true},
+	)
+
+	return conn, err
 }
 
 func getResponse(conn io.Reader) (status int, meta string, body []byte, err error) {
