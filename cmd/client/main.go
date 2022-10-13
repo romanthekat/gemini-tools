@@ -34,7 +34,6 @@ const (
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 
-	var linkRaw string
 	links := make([]string, 0, 100)
 	history := make([]string, 0, 100)
 
@@ -45,13 +44,19 @@ func main() {
 	fmt.Println()
 
 	for {
+		var linkRaw string
+		var doNothing bool
+
 		input, err := getUserInput(reader)
 		if err != nil {
 			fmt.Println("user input read failed:", err)
 			os.Exit(-1)
 		}
 
-		linkRaw, links, history = processUserInput(input, history, links)
+		linkRaw, links, history, doNothing = processUserInput(input, links, history)
+		if doNothing {
+			continue
+		}
 
 		link, err := url.Parse(linkRaw)
 		if err != nil {
@@ -133,13 +138,13 @@ func getUserInput(reader *bufio.Reader) (string, error) {
 
 func processUserInput(
 	input string,
-	history []string,
-	links []string) (string, []string, []string) {
+	links []string,
+	history []string) (string, []string, []string, bool) {
 	linkRaw := ""
 
 	switch input {
 	case "":
-		return input, links, history
+		return "", links, history, true
 
 	case "q":
 		os.Exit(0)
@@ -147,7 +152,7 @@ func processUserInput(
 	case "b":
 		if len(history) < 2 {
 			fmt.Println("\033[31mNo history yet\033[0m")
-			return "", links, history
+			return "", links, history, true
 		}
 
 		linkRaw = history[len(history)-2]
@@ -166,7 +171,7 @@ func processUserInput(
 		}
 	}
 
-	return linkRaw, links, history
+	return linkRaw, links, history, false
 }
 
 func doRequest(linkRaw, port string) (status int, meta string, body []byte, err error) {
