@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	Port      = "1965"
-	MediaType = "text/gemini"
+	Port            = "1965"
+	GeminiMediaType = "text/gemini"
 
 	StatusInput    = 1
 	StatusSuccess  = 2
@@ -73,60 +73,68 @@ func main() {
 			continue
 		}
 
-		switch status {
-		case StatusInput, StatusRedirect, StatusClientCertRequired:
-			fmt.Println("unsupported status:", status)
-		case StatusSuccess:
-			if !strings.HasPrefix(meta, "text/") {
-				fmt.Println("unsupported type:", meta)
-				continue
-			}
-
-			body := string(bodyBytes)
-			fmt.Println("meta:", meta)
-			if strings.HasPrefix(meta, MediaType) {
-				state.clearLinks()
-				preformatted := false
-
-				for _, line := range strings.Split(body, "\n") {
-					if strings.HasPrefix(line, "```") {
-						preformatted = !preformatted
-					} else if preformatted {
-						fmt.Println(line)
-					} else if strings.HasPrefix(line, LinkPrefix) {
-						line = line[2:]
-						parts := strings.Fields(line)
-						parsedLink, err := url.Parse(parts[0])
-						if err != nil {
-							fmt.Println("parsing absoluteLink failed:", err)
-							continue
-						}
-
-						absoluteLink := link.ResolveReference(parsedLink).String()
-						var linkNum string
-						if len(parts) == 1 {
-							linkNum = absoluteLink
-						} else {
-							linkNum = strings.Join(parts[1:], " ")
-						}
-
-						state.Links = append(state.Links, absoluteLink)
-						fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum)
-					} else {
-						fmt.Println(line)
-					}
-				}
-			} else {
-				// print as is
-				fmt.Print(body)
-			}
-
-			state.History = append(state.History, link.String())
-
-		case StatusTemporaryFailure, StatusPermanentFailure:
-			fmt.Println("ERROR:", meta)
+		err = processResponse(state, link, status, meta, bodyBytes)
+		if err != nil {
+			fmt.Println("error processing response:", err)
 		}
 	}
+}
+
+func processResponse(state *State, link *url.URL,
+	status int, meta string, bodyBytes []byte) error {
+	switch status {
+	case StatusInput, StatusRedirect, StatusClientCertRequired:
+		fmt.Println("unsupported status:", status)
+
+	case StatusSuccess:
+		if !strings.HasPrefix(meta, "text/") {
+			return fmt.Errorf("unsupported type: %s", meta)
+		}
+
+		body := string(bodyBytes)
+		if strings.HasPrefix(meta, GeminiMediaType) {
+			state.clearLinks()
+			preformatted := false
+
+			for _, line := range strings.Split(body, "\n") {
+				if strings.HasPrefix(line, "```") {
+					preformatted = !preformatted
+				} else if preformatted {
+					fmt.Println(line)
+				} else if strings.HasPrefix(line, LinkPrefix) {
+					line = line[2:]
+					parts := strings.Fields(line)
+					parsedLink, err := url.Parse(parts[0])
+					if err != nil {
+						return fmt.Errorf("parsing absoluteLink failed: %w", err)
+					}
+
+					absoluteLink := link.ResolveReference(parsedLink).String()
+					var linkNum string
+					if len(parts) == 1 {
+						linkNum = absoluteLink
+					} else {
+						linkNum = strings.Join(parts[1:], " ")
+					}
+
+					state.Links = append(state.Links, absoluteLink)
+					fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum)
+				} else {
+					fmt.Println(line)
+				}
+			}
+		} else {
+			// print as is
+			fmt.Print(body)
+		}
+
+		state.History = append(state.History, link.String())
+
+	case StatusTemporaryFailure, StatusPermanentFailure:
+		return fmt.Errorf("ERROR: %s", meta)
+	}
+
+	return nil
 }
 
 func getUserInput(reader *bufio.Reader) (string, error) {
