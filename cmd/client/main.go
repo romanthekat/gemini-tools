@@ -60,7 +60,7 @@ func main() {
 
 		link, doNothing, err := processUserInput(input, state)
 		if err != nil {
-			fmt.Println("error parsing user input:", err)
+			fmt.Println("error processing user input:", err)
 			continue
 		}
 		if doNothing {
@@ -76,6 +76,7 @@ func main() {
 		err = processResponse(state, link, status, meta, bodyBytes)
 		if err != nil {
 			fmt.Println("error processing response:", err)
+			continue
 		}
 	}
 }
