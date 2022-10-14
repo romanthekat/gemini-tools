@@ -17,9 +17,10 @@ const (
 	Port            = "1965"
 	GeminiMediaType = "text/gemini"
 
-	StatusInput    = 1
-	StatusSuccess  = 2
-	StatusRedirect = 3
+	StatusIncorrect = -1
+	StatusInput     = 1
+	StatusSuccess   = 2
+	StatusRedirect  = 3
 
 	StatusTemporaryFailure = 4
 	StatusPermanentFailure = 5
@@ -36,14 +37,32 @@ type State struct {
 	History []string
 }
 
+func NewState() *State {
+	return &State{make([]string, 0, 100), make([]string, 0, 100)}
+}
+
 func (s *State) clearLinks() {
 	s.Links = make([]string, 0, 100)
+}
+
+type Response struct {
+	Status int
+	Meta   string
+	Body   []byte
+}
+
+func NewResponseEmpty() *Response {
+	return NewResponse(StatusIncorrect, "", nil)
+}
+
+func NewResponse(status int, meta string, body []byte) *Response {
+	return &Response{status, meta, body}
 }
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 
-	state := &State{}
+	state := NewState()
 
 	fmt.Println("gemini://url\topen url")
 	fmt.Println("number\t\topen link by number")
@@ -67,13 +86,13 @@ func main() {
 			continue
 		}
 
-		status, meta, bodyBytes, err := doRequest(link)
+		response, err := doRequest(link)
 		if err != nil {
 			fmt.Println("request failed:", err)
 			continue
 		}
 
-		err = processResponse(state, link, status, meta, bodyBytes)
+		err = processResponse(state, link, response)
 		if err != nil {
 			fmt.Println("error processing response:", err)
 			continue
@@ -81,19 +100,18 @@ func main() {
 	}
 }
 
-func processResponse(state *State, link *url.URL,
-	status int, meta string, bodyBytes []byte) error {
-	switch status {
+func processResponse(state *State, link *url.URL, response *Response) error {
+	switch response.Status {
 	case StatusInput, StatusRedirect, StatusClientCertRequired:
-		return fmt.Errorf("unsupported status: %s", meta)
+		return fmt.Errorf("unsupported status: %s", response.Meta)
 
 	case StatusSuccess:
-		if !strings.HasPrefix(meta, "text/") {
-			return fmt.Errorf("unsupported type: %s", meta)
+		if !strings.HasPrefix(response.Meta, "text/") {
+			return fmt.Errorf("unsupported type: %s", response.Meta)
 		}
 
-		body := string(bodyBytes)
-		if strings.HasPrefix(meta, GeminiMediaType) {
+		body := string(response.Body)
+		if strings.HasPrefix(response.Meta, GeminiMediaType) {
 			state.clearLinks()
 			preformatted := false
 
@@ -132,7 +150,7 @@ func processResponse(state *State, link *url.URL,
 		state.History = append(state.History, link.String())
 
 	case StatusTemporaryFailure, StatusPermanentFailure:
-		return fmt.Errorf("ERROR: %s", meta)
+		return fmt.Errorf("ERROR: %s", response.Meta)
 	}
 
 	return nil
@@ -201,41 +219,41 @@ func getFullGeminiLink(linkRaw string) (*url.URL, error) {
 	return link, nil
 }
 
-func doRequest(link *url.URL) (status int, meta string, body []byte, err error) {
+func doRequest(link *url.URL) (*Response, error) {
 	redirectsLeft := MaxRedirects
 
 	for {
 		conn, err := getConn(link.Host)
 		if err != nil {
-			return status, meta, body, fmt.Errorf("connection failed: %w", err)
+			return NewResponseEmpty(), fmt.Errorf("connection failed: %w", err)
 		}
 		defer conn.Close()
 
 		_, err = conn.Write([]byte(link.String() + "\r\n"))
 		if err != nil {
-			return status, meta, body, fmt.Errorf("sending request url failed: %w", err)
+			return NewResponseEmpty(), fmt.Errorf("sending request url failed: %w", err)
 		}
 
-		status, meta, body, err = getResponse(conn)
+		status, meta, body, err := getResponse(conn)
 		if err != nil {
-			return status, meta, body, err
+			return NewResponse(status, meta, body), err
 		}
 
 		if status == StatusRedirect {
 			if redirectsLeft == 0 {
-				return status, meta, body, fmt.Errorf("too many redirects, last url: %s", meta)
+				return NewResponse(status, meta, body), fmt.Errorf("too many redirects, last url: %s", meta)
 			}
 
 			link, err = getFullGeminiLink(meta)
 			if err != nil {
-				return status, meta, body, fmt.Errorf("error generating gemini URL: %w", err)
+				return NewResponse(status, meta, body), fmt.Errorf("error generating gemini URL: %w", err)
 			}
 
 			redirectsLeft -= 1
 			continue
 		}
 
-		return status, meta, body, err
+		return NewResponse(status, meta, body), err
 	}
 }
 
