@@ -14,4 +14,3 @@ g		open Project Gemini homepage
 
 >
 ```
-
