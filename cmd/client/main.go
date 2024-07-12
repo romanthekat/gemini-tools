@@ -334,7 +334,7 @@ func processLink(state *State, link *url.URL, line string) error {
 	}
 
 	state.Links = append(state.Links, absoluteLink)
-	fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum) //blue
+	fmt.Printf("[%d] \u001B[34m%s\033[0m\n", len(state.Links), linkNum) //blue
 
 	return nil
 }
