@@ -27,9 +27,12 @@ const (
 
 	StatusClientCertRequired = 6
 
-	LinkPrefix   = "=>"
-	Protocol     = "gemini://"
-	MaxRedirects = 4
+	LinkPrefix    = "=>"
+	Header1Prefix = "#"
+	Header2Prefix = "##"
+	Header3Prefix = "###"
+	Protocol      = "gemini://"
+	MaxRedirects  = 4
 )
 
 type State struct {
@@ -106,52 +109,76 @@ func processResponse(state *State, link *url.URL, response *Response) error {
 		return fmt.Errorf("unsupported status: %s", response.Meta)
 
 	case StatusSuccess:
-		if !strings.HasPrefix(response.Meta, "text/") {
-			return fmt.Errorf("unsupported type: %s", response.Meta)
+		err := processSuccessfulResponse(state, link, response)
+		if err != nil {
+			return err
 		}
-
-		body := string(response.Body)
-		if strings.HasPrefix(response.Meta, GeminiMediaType) {
-			state.clearLinks()
-			preformatted := false
-
-			for _, line := range strings.Split(body, "\n") {
-				if strings.HasPrefix(line, "```") {
-					preformatted = !preformatted
-				} else if preformatted {
-					fmt.Println(line)
-				} else if strings.HasPrefix(line, LinkPrefix) {
-					line = line[2:]
-					parts := strings.Fields(line)
-					parsedLink, err := url.Parse(parts[0])
-					if err != nil {
-						return fmt.Errorf("parsing absoluteLink failed: %w", err)
-					}
-
-					absoluteLink := link.ResolveReference(parsedLink).String()
-					var linkNum string
-					if len(parts) == 1 {
-						linkNum = absoluteLink
-					} else {
-						linkNum = strings.Join(parts[1:], " ")
-					}
-
-					state.Links = append(state.Links, absoluteLink)
-					fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum)
-				} else {
-					fmt.Println(line)
-				}
-			}
-		} else {
-			// print as is
-			fmt.Print(body)
-		}
-
-		state.History = append(state.History, link.String())
 
 	case StatusTemporaryFailure, StatusPermanentFailure:
 		return fmt.Errorf("ERROR: %s", response.Meta)
 	}
+
+	return nil
+}
+
+func processSuccessfulResponse(state *State, link *url.URL, response *Response) error {
+	if !strings.HasPrefix(response.Meta, "text/") {
+		return fmt.Errorf("unsupported type: %s", response.Meta)
+	}
+
+	body := string(response.Body)
+	if strings.HasPrefix(response.Meta, GeminiMediaType) {
+		state.clearLinks()
+		preformatted := false
+
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "```") {
+				fmt.Println(line)
+				preformatted = !preformatted
+			} else if preformatted {
+				fmt.Println(line)
+			} else if strings.HasPrefix(line, LinkPrefix) {
+				err := processLink(state, link, line)
+				if err != nil {
+					return err
+				}
+			} else if strings.HasPrefix(line, Header3Prefix) {
+				fmt.Printf("\033[33m%s\033[0m\n", line) //orange
+			} else if strings.HasPrefix(line, Header2Prefix) {
+				fmt.Printf("\033[32m%s\033[0m\n", line) //green
+			} else if strings.HasPrefix(line, Header1Prefix) {
+				fmt.Printf("\033[31m%s\033[0m\n", line) //red
+			} else {
+				fmt.Println(line)
+			}
+		}
+	} else {
+		// print as is
+		fmt.Print(body)
+	}
+
+	state.History = append(state.History, link.String())
+	return nil
+}
+
+func processLink(state *State, link *url.URL, line string) error {
+	line = line[2:]
+	parts := strings.Fields(line)
+	parsedLink, err := url.Parse(parts[0])
+	if err != nil {
+		return fmt.Errorf("parsing absoluteLink failed: %w", err)
+	}
+
+	absoluteLink := link.ResolveReference(parsedLink).String()
+	var linkNum string
+	if len(parts) == 1 {
+		linkNum = absoluteLink
+	} else {
+		linkNum = strings.Join(parts[1:], " ")
+	}
+
+	state.Links = append(state.Links, absoluteLink)
+	fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum) //blue
 
 	return nil
 }
@@ -184,6 +211,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 
 		linkRaw = state.History[len(state.History)-2]
 		state.History = state.History[:len(state.History)-2]
+		fmt.Println(">", linkRaw)
 
 	default:
 		index, err := strconv.Atoi(input)
@@ -195,6 +223,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 			}
 		} else {
 			linkRaw = state.Links[index-1]
+			fmt.Println(">", linkRaw)
 		}
 	}
 
