@@ -40,12 +40,12 @@ type State struct {
 	History []string
 }
 
-func NewState() *State {
-	return &State{make([]string, 0, 100), make([]string, 0, 100)}
-}
-
 func (s *State) clearLinks() {
 	s.Links = make([]string, 0, 100)
+}
+
+func NewState() *State {
+	return &State{make([]string, 0, 100), make([]string, 0, 100)}
 }
 
 type Response struct {
@@ -54,12 +54,12 @@ type Response struct {
 	Body   []byte
 }
 
-func NewResponseEmpty() *Response {
-	return NewResponse(StatusIncorrect, "", nil)
-}
-
 func NewResponse(status int, meta string, body []byte) *Response {
 	return &Response{status, meta, body}
+}
+
+func NewResponseEmpty() *Response {
+	return NewResponse(StatusIncorrect, "", nil)
 }
 
 func main() {
@@ -106,86 +106,6 @@ func printHelp() {
 	fmt.Println("q\t\tquit")
 	fmt.Println("h\t\tprint this summary")
 	fmt.Println()
-}
-
-func processResponse(state *State, link *url.URL, response *Response) error {
-	switch response.Status {
-	case StatusInput, StatusRedirect, StatusClientCertRequired:
-		return fmt.Errorf("unsupported status: %s", response.Meta)
-
-	case StatusSuccess:
-		err := processSuccessfulResponse(state, link, response)
-		if err != nil {
-			return err
-		}
-
-	case StatusTemporaryFailure, StatusPermanentFailure:
-		return fmt.Errorf("ERROR: %s", response.Meta)
-	}
-
-	return nil
-}
-
-func processSuccessfulResponse(state *State, link *url.URL, response *Response) error {
-	if !strings.HasPrefix(response.Meta, "text/") {
-		return fmt.Errorf("unsupported type: %s", response.Meta)
-	}
-
-	body := string(response.Body)
-	if strings.HasPrefix(response.Meta, GeminiMediaType) {
-		state.clearLinks()
-		preformatted := false
-
-		for _, line := range strings.Split(body, "\n") {
-			if strings.HasPrefix(line, "```") {
-				fmt.Println(line)
-				preformatted = !preformatted
-			} else if preformatted {
-				fmt.Println(line)
-			} else if strings.HasPrefix(line, LinkPrefix) {
-				err := processLink(state, link, line)
-				if err != nil {
-					return err
-				}
-			} else if strings.HasPrefix(line, Header3Prefix) {
-				fmt.Printf("\033[33m%s\033[0m\n", line) //orange
-			} else if strings.HasPrefix(line, Header2Prefix) {
-				fmt.Printf("\033[32m%s\033[0m\n", line) //green
-			} else if strings.HasPrefix(line, Header1Prefix) {
-				fmt.Printf("\033[31m%s\033[0m\n", line) //red
-			} else {
-				fmt.Println(line)
-			}
-		}
-	} else {
-		// print as is
-		fmt.Print(body)
-	}
-
-	state.History = append(state.History, link.String())
-	return nil
-}
-
-func processLink(state *State, link *url.URL, line string) error {
-	line = line[2:]
-	parts := strings.Fields(line)
-	parsedLink, err := url.Parse(parts[0])
-	if err != nil {
-		return fmt.Errorf("parsing absoluteLink failed: %w", err)
-	}
-
-	absoluteLink := link.ResolveReference(parsedLink).String()
-	var linkNum string
-	if len(parts) == 1 {
-		linkNum = absoluteLink
-	} else {
-		linkNum = strings.Join(parts[1:], " ")
-	}
-
-	state.Links = append(state.Links, absoluteLink)
-	fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum) //blue
-
-	return nil
 }
 
 func getUserInput(reader *bufio.Reader) (string, error) {
@@ -244,19 +164,6 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 	return link, false, nil
 }
 
-func getFullGeminiLink(linkRaw string) (*url.URL, error) {
-	link, err := url.Parse(linkRaw)
-	if err != nil {
-		return link, fmt.Errorf("error parsing URL: %w", err)
-	}
-
-	if !strings.HasSuffix(link.Host, Port) {
-		link.Host = link.Host + ":" + Port
-	}
-
-	return link, nil
-}
-
 func doRequest(link *url.URL) (*Response, error) {
 	redirectsLeft := MaxRedirects
 
@@ -295,16 +202,22 @@ func doRequest(link *url.URL) (*Response, error) {
 	}
 }
 
-func getConn(addr string) (io.ReadWriteCloser, error) {
-	dialer := &net.Dialer{Timeout: 4 * time.Second}
+func processResponse(state *State, link *url.URL, response *Response) error {
+	switch response.Status {
+	case StatusInput, StatusRedirect, StatusClientCertRequired:
+		return fmt.Errorf("unsupported status: %s", response.Meta)
 
-	conn, err := tls.DialWithDialer(
-		dialer,
-		"tcp", addr,
-		&tls.Config{InsecureSkipVerify: true},
-	)
+	case StatusSuccess:
+		err := processSuccessfulResponse(state, link, response)
+		if err != nil {
+			return err
+		}
 
-	return conn, err
+	case StatusTemporaryFailure, StatusPermanentFailure:
+		return fmt.Errorf("ERROR: %s", response.Meta)
+	}
+
+	return nil
 }
 
 func getResponse(conn io.Reader) (status int, meta string, body []byte, err error) {
@@ -344,4 +257,91 @@ func getResponse(conn io.Reader) (status int, meta string, body []byte, err erro
 	default:
 		return status, meta, body, fmt.Errorf("unknown response status: %s", responseHeader)
 	}
+}
+
+func processSuccessfulResponse(state *State, link *url.URL, response *Response) error {
+	if !strings.HasPrefix(response.Meta, "text/") {
+		return fmt.Errorf("unsupported type: %s", response.Meta)
+	}
+
+	body := string(response.Body)
+	if strings.HasPrefix(response.Meta, GeminiMediaType) {
+		state.clearLinks()
+		preformatted := false
+
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "```") {
+				fmt.Println(line)
+				preformatted = !preformatted
+			} else if preformatted {
+				fmt.Println(line)
+			} else if strings.HasPrefix(line, LinkPrefix) {
+				err := processLink(state, link, line)
+				if err != nil {
+					return err
+				}
+			} else if strings.HasPrefix(line, Header3Prefix) {
+				fmt.Printf("\033[33m%s\033[0m\n", line) //orange
+			} else if strings.HasPrefix(line, Header2Prefix) {
+				fmt.Printf("\033[32m%s\033[0m\n", line) //green
+			} else if strings.HasPrefix(line, Header1Prefix) {
+				fmt.Printf("\033[31m%s\033[0m\n", line) //red
+			} else {
+				fmt.Println(line)
+			}
+		}
+	} else {
+		// print as is
+		fmt.Print(body)
+	}
+
+	state.History = append(state.History, link.String())
+	return nil
+}
+
+func getFullGeminiLink(linkRaw string) (*url.URL, error) {
+	link, err := url.Parse(linkRaw)
+	if err != nil {
+		return link, fmt.Errorf("error parsing URL: %w", err)
+	}
+
+	if !strings.HasSuffix(link.Host, Port) {
+		link.Host = link.Host + ":" + Port
+	}
+
+	return link, nil
+}
+
+func processLink(state *State, link *url.URL, line string) error {
+	line = line[2:]
+	parts := strings.Fields(line)
+	parsedLink, err := url.Parse(parts[0])
+	if err != nil {
+		return fmt.Errorf("parsing absoluteLink failed: %w", err)
+	}
+
+	absoluteLink := link.ResolveReference(parsedLink).String()
+	var linkNum string
+	if len(parts) == 1 {
+		linkNum = absoluteLink
+	} else {
+		linkNum = strings.Join(parts[1:], " ")
+	}
+
+	state.Links = append(state.Links, absoluteLink)
+	fmt.Printf("\033[34m[%d] %s\033[0m\n", len(state.Links), linkNum) //blue
+
+	return nil
+}
+
+func getConn(addr string) (io.ReadWriteCloser, error) {
+	dialer := &net.Dialer{Timeout: 4 * time.Second}
+
+	conn, err := tls.DialWithDialer(
+		dialer,
+		"tcp", addr,
+		&tls.Config{InsecureSkipVerify: true},
+	)
+
+	return conn, err
 }
