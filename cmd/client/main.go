@@ -105,6 +105,7 @@ func printHelp() {
 	fmt.Println("b\t\tgo back")
 	fmt.Println("q\t\tquit")
 	fmt.Println("h\t\tprint this summary")
+	fmt.Println("g\t\topen Project Gemini homepage")
 	fmt.Println()
 }
 
@@ -132,6 +133,9 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		printHelp()
 		return nil, true, nil
 
+	case "g":
+		linkRaw = "gemini://geminiprotocol.net:1965/"
+
 	case "b":
 		if len(state.History) < 2 {
 			fmt.Println("\033[31mNo history yet\033[0m")
@@ -143,6 +147,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		fmt.Println(">", linkRaw)
 
 	default:
+		// Treat it as link number
 		index, err := strconv.Atoi(input)
 		if err != nil {
 			// Treat this as a URL
