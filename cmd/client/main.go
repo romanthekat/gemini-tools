@@ -67,11 +67,7 @@ func main() {
 
 	state := NewState()
 
-	fmt.Println("gemini://url\topen url")
-	fmt.Println("number\t\topen link by number")
-	fmt.Println("b\t\tgo back")
-	fmt.Println("q\t\tquit")
-	fmt.Println()
+	printHelp()
 
 	for {
 		input, err := getUserInput(reader)
@@ -101,6 +97,15 @@ func main() {
 			continue
 		}
 	}
+}
+
+func printHelp() {
+	fmt.Println("gemini://url\topen url")
+	fmt.Println("number\t\topen link by number")
+	fmt.Println("b\t\tgo back")
+	fmt.Println("q\t\tquit")
+	fmt.Println("h\t\tprint this summary")
+	fmt.Println()
 }
 
 func processResponse(state *State, link *url.URL, response *Response) error {
@@ -202,6 +207,10 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 
 	case "q":
 		os.Exit(0)
+
+	case "h":
+		printHelp()
+		return nil, true, nil
 
 	case "b":
 		if len(state.History) < 2 {
