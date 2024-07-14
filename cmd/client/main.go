@@ -101,7 +101,7 @@ func main() {
 
 func printHelp() {
 	fmt.Println("gemini://url\topen url")
-	fmt.Println("number\t\topen link by number")
+	fmt.Println("number\t\topen link from current page by number")
 	fmt.Println("b\t\tgo back")
 	fmt.Println("q\t\tquit")
 	fmt.Println("h\t\tprint this summary")
@@ -138,7 +138,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 
 	case "b":
 		if len(state.History) < 2 {
-			fmt.Println("\033[31mNo history yet\033[0m")
+			fmt.Println("\033[31mNo history yet\033[0m") //red
 			return nil, true, nil
 		}
 
@@ -156,6 +156,11 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 				linkRaw = Protocol + linkRaw
 			}
 		} else {
+			if index > len(state.Links) {
+				fmt.Println("\033[31mNo link with his number\033[0m") //red
+				return nil, true, nil
+			}
+
 			linkRaw = state.Links[index-1]
 			fmt.Println(">", linkRaw)
 		}
