@@ -310,6 +310,10 @@ func processSuccessfulResponse(state *State, link *url.URL, response *Response) 
 }
 
 func getFullGeminiLink(linkRaw string) (*url.URL, error) {
+	if strings.HasPrefix(linkRaw, "http") {
+		return nil, fmt.Errorf("http(s) links aren't supported")
+	}
+
 	link, err := url.Parse(linkRaw)
 	if err != nil {
 		return link, fmt.Errorf("error parsing URL: %w", err)
