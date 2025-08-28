@@ -314,13 +314,25 @@ func getFullGeminiLink(linkRaw string) (*url.URL, error) {
 		return nil, fmt.Errorf("http(s) links aren't supported")
 	}
 
+	if !strings.HasPrefix(linkRaw, "gemini://") {
+		linkRaw = "gemini://" + linkRaw
+	}
+
 	link, err := url.Parse(linkRaw)
 	if err != nil {
 		return link, fmt.Errorf("error parsing URL: %w", err)
 	}
 
-	if !strings.HasSuffix(link.Host, Port) {
-		link.Host = link.Host + ":" + Port
+	// Only add default port if no explicit port is present
+	if link.Port() == "" {
+		// Use JoinHostPort to be safe with IPv6 literals
+		hostname := link.Hostname()
+		if hostname == "" {
+			// Fallback to raw host if parsing failed for some reason
+			link.Host = link.Host + ":" + Port
+		} else {
+			link.Host = net.JoinHostPort(hostname, Port)
+		}
 	}
 
 	return link, nil
