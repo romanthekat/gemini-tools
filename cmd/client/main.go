@@ -2,37 +2,20 @@ package main
 
 import (
 	"bufio"
-	"crypto/tls"
 	"fmt"
-	"io"
-	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/romanthekat/gemini-tools/internal/gemini"
 )
 
 const (
-	Port            = "1965"
-	GeminiMediaType = "text/gemini"
-
-	StatusIncorrect = -1
-	StatusInput     = 1
-	StatusSuccess   = 2
-	StatusRedirect  = 3
-
-	StatusTemporaryFailure = 4
-	StatusPermanentFailure = 5
-
-	StatusClientCertRequired = 6
-
 	LinkPrefix    = "=>"
 	Header1Prefix = "#"
 	Header2Prefix = "##"
 	Header3Prefix = "###"
-	Protocol      = "gemini://"
-	MaxRedirects  = 4
 )
 
 type State struct {
@@ -46,20 +29,6 @@ func (s *State) clearLinks() {
 
 func NewState() *State {
 	return &State{make([]string, 0, 100), make([]string, 0, 100)}
-}
-
-type Response struct {
-	Status int
-	Meta   string
-	Body   []byte
-}
-
-func NewResponse(status int, meta string, body []byte) *Response {
-	return &Response{status, meta, body}
-}
-
-func NewResponseEmpty() *Response {
-	return NewResponse(StatusIncorrect, "", nil)
 }
 
 func main() {
@@ -152,8 +121,8 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		if err != nil {
 			// Treat this as a URL
 			linkRaw = input
-			if !strings.HasPrefix(linkRaw, Protocol) {
-				linkRaw = Protocol + linkRaw
+			if !strings.HasPrefix(linkRaw, gemini.Protocol) {
+				linkRaw = gemini.Protocol + linkRaw
 			}
 		} else {
 			if index > len(state.Links) {
@@ -166,7 +135,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		}
 	}
 
-	link, err := getFullGeminiLink(linkRaw)
+	link, err := gemini.GetFullGeminiLink(linkRaw)
 	if err != nil {
 		return nil, false, fmt.Errorf("error generating gemini URL: %w", err)
 	}
@@ -174,108 +143,35 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 	return link, false, nil
 }
 
-func doRequest(link *url.URL) (*Response, error) {
-	redirectsLeft := MaxRedirects
-
-	for {
-		conn, err := getConn(link.Host)
-		if err != nil {
-			return NewResponseEmpty(), fmt.Errorf("connection failed: %w", err)
-		}
-		defer conn.Close()
-
-		_, err = conn.Write([]byte(link.String() + "\r\n"))
-		if err != nil {
-			return NewResponseEmpty(), fmt.Errorf("sending request url failed: %w", err)
-		}
-
-		status, meta, body, err := getResponse(conn)
-		if err != nil {
-			return NewResponse(status, meta, body), err
-		}
-
-		if status == StatusRedirect {
-			if redirectsLeft == 0 {
-				return NewResponse(status, meta, body), fmt.Errorf("too many redirects, last url: %s", meta)
-			}
-
-			link, err = getFullGeminiLink(meta)
-			if err != nil {
-				return NewResponse(status, meta, body), fmt.Errorf("error generating gemini URL: %w", err)
-			}
-
-			redirectsLeft -= 1
-			continue
-		}
-
-		return NewResponse(status, meta, body), err
-	}
+func doRequest(link *url.URL) (*gemini.Response, error) {
+	return gemini.DoRequest(link)
 }
 
-func processResponse(state *State, link *url.URL, response *Response) error {
+func processResponse(state *State, link *url.URL, response *gemini.Response) error {
 	switch response.Status {
-	case StatusInput, StatusRedirect, StatusClientCertRequired:
+	case gemini.StatusInput, gemini.StatusRedirect, gemini.StatusClientCertRequired:
 		return fmt.Errorf("unsupported status: %s", response.Meta)
 
-	case StatusSuccess:
+	case gemini.StatusSuccess:
 		err := processSuccessfulResponse(state, link, response)
 		if err != nil {
 			return err
 		}
 
-	case StatusTemporaryFailure, StatusPermanentFailure:
+	case gemini.StatusTemporaryFailure, gemini.StatusPermanentFailure:
 		return fmt.Errorf("ERROR: %s", response.Meta)
 	}
 
 	return nil
 }
 
-func getResponse(conn io.Reader) (status int, meta string, body []byte, err error) {
-	reader := bufio.NewReader(conn)
-
-	// 20 text/gemini
-	// 20 text/gemini; charset=utf-8
-	responseHeader, err := reader.ReadString('\n')
-	if err != nil {
-		return status, meta, body, fmt.Errorf("response header read failed: %w", err)
-	}
-	responseHeader = strings.TrimSpace(responseHeader)
-	fmt.Println("responseHeader:", responseHeader)
-
-	statusDelim := strings.Index(responseHeader, " ")
-
-	status, err = strconv.Atoi(responseHeader[0:1])
-	if err != nil {
-		return status, meta, body, fmt.Errorf("response code parsing failed: %w", err)
-	}
-
-	meta = responseHeader[statusDelim+1:]
-
-	switch status {
-	case StatusInput, StatusRedirect,
-		StatusTemporaryFailure, StatusPermanentFailure, StatusClientCertRequired:
-		return status, meta, body, nil
-
-	case StatusSuccess:
-		body, err := io.ReadAll(reader)
-		if err != nil {
-			return status, meta, body, fmt.Errorf("response body reading failed: %w", err)
-		}
-
-		return status, meta, body, nil
-
-	default:
-		return status, meta, body, fmt.Errorf("unknown response status: %s", responseHeader)
-	}
-}
-
-func processSuccessfulResponse(state *State, link *url.URL, response *Response) error {
+func processSuccessfulResponse(state *State, link *url.URL, response *gemini.Response) error {
 	if !strings.HasPrefix(response.Meta, "text/") {
 		return fmt.Errorf("unsupported type: %s", response.Meta)
 	}
 
 	body := string(response.Body)
-	if strings.HasPrefix(response.Meta, GeminiMediaType) {
+	if strings.HasPrefix(response.Meta, gemini.GeminiMediaType) {
 		state.clearLinks()
 		preformatted := false
 
@@ -309,35 +205,6 @@ func processSuccessfulResponse(state *State, link *url.URL, response *Response) 
 	return nil
 }
 
-func getFullGeminiLink(linkRaw string) (*url.URL, error) {
-	if strings.HasPrefix(linkRaw, "http") {
-		return nil, fmt.Errorf("http(s) links aren't supported")
-	}
-
-	if !strings.HasPrefix(linkRaw, "gemini://") {
-		linkRaw = "gemini://" + linkRaw
-	}
-
-	link, err := url.Parse(linkRaw)
-	if err != nil {
-		return link, fmt.Errorf("error parsing URL: %w", err)
-	}
-
-	// Only add default port if no explicit port is present
-	if link.Port() == "" {
-		// Use JoinHostPort to be safe with IPv6 literals
-		hostname := link.Hostname()
-		if hostname == "" {
-			// Fallback to raw host if parsing failed for some reason
-			link.Host = link.Host + ":" + Port
-		} else {
-			link.Host = net.JoinHostPort(hostname, Port)
-		}
-	}
-
-	return link, nil
-}
-
 func processLink(state *State, link *url.URL, line string) error {
 	line = line[2:]
 	parts := strings.Fields(line)
@@ -358,16 +225,4 @@ func processLink(state *State, link *url.URL, line string) error {
 	fmt.Printf("[%d] \u001B[34m%s\033[0m\n", len(state.Links), linkNum) //blue
 
 	return nil
-}
-
-func getConn(addr string) (io.ReadWriteCloser, error) {
-	dialer := &net.Dialer{Timeout: 4 * time.Second}
-
-	conn, err := tls.DialWithDialer(
-		dialer,
-		"tcp", addr,
-		&tls.Config{InsecureSkipVerify: true},
-	)
-
-	return conn, err
 }

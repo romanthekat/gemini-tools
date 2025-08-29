@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/romanthekat/gemini-tools/internal/gemini"
 )
 
 // Test getFullGeminiLink ensures proper handling of raw links.
@@ -22,7 +24,7 @@ func TestGetFullGeminiLink(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, err := getFullGeminiLink(tt.raw)
+		got, err := gemini.GetFullGeminiLink(tt.raw)
 		if (err != nil) != tt.hasErr {
 			t.Fatalf("unexpected error status for %q: got %v want %v", tt.raw, err, tt.hasErr)
 		}
@@ -57,12 +59,12 @@ func TestGetResponse(t *testing.T) {
 	body := "Hello World\n=> gemini://example.com:1965/next Next Page\n"
 	reader := bufio.NewReader(strings.NewReader(header + body))
 
-	status, meta, data, err := getResponse(reader)
+	status, meta, data, err := gemini.GetResponse(reader)
 	if err != nil {
 		t.Fatalf("getResponse error: %v", err)
 	}
-	if status != StatusSuccess {
-		t.Errorf("expected status %d, got %d", StatusSuccess, status)
+	if status != gemini.StatusSuccess {
+		t.Errorf("expected status %d, got %d", gemini.StatusSuccess, status)
 	}
 	if meta != "text/gemini" {
 		t.Errorf("expected meta %q, got %q", "text/gemini", meta)
@@ -75,12 +77,12 @@ func TestGetResponse(t *testing.T) {
 	// Simulate a redirect response.
 	redirectHeader := "31 gemini://example.com:1965/redirect\r\n"
 	rReader := bufio.NewReader(strings.NewReader(redirectHeader))
-	status, meta, data, err = getResponse(rReader)
+	status, meta, data, err = gemini.GetResponse(rReader)
 	if err != nil {
 		t.Fatalf("getResponse error for redirect: %v", err)
 	}
-	if status != StatusRedirect {
-		t.Errorf("expected redirect status %d, got %d", StatusRedirect, status)
+	if status != gemini.StatusRedirect {
+		t.Errorf("expected redirect status %d, got %d", gemini.StatusRedirect, status)
 	}
 	if meta != "gemini://example.com:1965/redirect" {
 		t.Errorf("expected meta %q, got %q", "gemini://example.com:1965/redirect", meta)
@@ -93,7 +95,7 @@ func TestGetResponse(t *testing.T) {
 // Test getConn returns a TLS connection; here we only verify error handling
 // with an invalid address (no network call is made in unit tests).
 func TestGetConnInvalid(t *testing.T) {
-	_, err := getConn("invalid:9999")
+	_, err := gemini.GetConn("invalid:9999")
 	if err == nil {
 		t.Fatalf("expected error for invalid address, got nil")
 	}
@@ -181,23 +183,23 @@ func TestProcessResponseStatuses(t *testing.T) {
 	link, _ := url.Parse("gemini://example.com:1965/")
 
 	// Unsupported statuses
-	for _, st := range []int{StatusInput, StatusRedirect, StatusClientCertRequired} {
-		resp := &Response{Status: st, Meta: "meta"}
+	for _, st := range []int{gemini.StatusInput, gemini.StatusRedirect, gemini.StatusClientCertRequired} {
+		resp := &gemini.Response{Status: st, Meta: "meta"}
 		if err := processResponse(state, link, resp); err == nil {
 			t.Errorf("expected error for status %d", st)
 		}
 	}
 
 	// Failure statuses
-	for _, st := range []int{StatusTemporaryFailure, StatusPermanentFailure} {
-		resp := &Response{Status: st, Meta: "failure"}
+	for _, st := range []int{gemini.StatusTemporaryFailure, gemini.StatusPermanentFailure} {
+		resp := &gemini.Response{Status: st, Meta: "failure"}
 		if err := processResponse(state, link, resp); err == nil || !strings.Contains(err.Error(), "ERROR:") {
 			t.Errorf("expected ERROR: prefix for status %d, got %v", st, err)
 		}
 	}
 
 	// Success flow
-	resp := &Response{Status: StatusSuccess, Meta: GeminiMediaType, Body: []byte("# Title\n")}
+	resp := &gemini.Response{Status: gemini.StatusSuccess, Meta: gemini.GeminiMediaType, Body: []byte("# Title\n")}
 	if err := processResponse(state, link, resp); err != nil {
 		t.Fatalf("unexpected error for success: %v", err)
 	}
@@ -217,7 +219,7 @@ func TestProcessSuccessfulResponseGemtext(t *testing.T) {
 		"Normal text",
 	}, "\n")
 
-	resp := &Response{Status: StatusSuccess, Meta: GeminiMediaType, Body: []byte(body)}
+	resp := &gemini.Response{Status: gemini.StatusSuccess, Meta: gemini.GeminiMediaType, Body: []byte(body)}
 	if err := processSuccessfulResponse(state, link, resp); err != nil {
 		t.Fatalf("processSuccessfulResponse error: %v", err)
 	}
@@ -237,7 +239,7 @@ func TestProcessSuccessfulResponsePlainText(t *testing.T) {
 	state.Links = []string{"keep"}
 	link, _ := url.Parse("gemini://example.com:1965/plain")
 
-	resp := &Response{Status: StatusSuccess, Meta: "text/plain", Body: []byte("=> not a gemtext link\n")}
+	resp := &gemini.Response{Status: gemini.StatusSuccess, Meta: "text/plain", Body: []byte("=> not a gemtext link\n")}
 	if err := processSuccessfulResponse(state, link, resp); err != nil {
 		t.Fatalf("processSuccessfulResponse error: %v", err)
 	}
