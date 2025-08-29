@@ -54,7 +54,7 @@ func main() {
 			continue
 		}
 
-		response, err := doRequest(link)
+		response, err := gemini.DoRequest(link)
 		if err != nil {
 			fmt.Println("request failed:", err)
 			continue
@@ -141,10 +141,6 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 	}
 
 	return link, false, nil
-}
-
-func doRequest(link *url.URL) (*gemini.Response, error) {
-	return gemini.DoRequest(link)
 }
 
 func processResponse(state *State, link *url.URL, response *gemini.Response) error {
