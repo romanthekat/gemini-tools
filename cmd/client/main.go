@@ -104,6 +104,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 
 	case "g":
 		linkRaw = "gemini://geminiprotocol.net:1965/"
+		fmt.Println(">", linkRaw)
 
 	case "b":
 		if len(state.History) < 2 {
