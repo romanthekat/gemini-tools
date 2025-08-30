@@ -73,6 +73,7 @@ func New(opts Options) *Crawler {
 }
 
 const PermissionsFull = 0o755
+const PermissionsNonExecutable = 0o644
 
 type pageMeta struct {
 	URL         string    `json:"url"`
@@ -280,9 +281,12 @@ func pageID(u *url.URL) (host, id string) {
 		host = h
 	}
 	canonicalLink := canonicalString(u)
-	h := sha256.Sum256([]byte(canonicalLink))
-	hash := hex.EncodeToString(h[:])
+
+	hashBytes := sha256.Sum256([]byte(canonicalLink))
+	hash := hex.EncodeToString(hashBytes[:])
+
 	slug := slugFromPath(u.Path)
+
 	id = fmt.Sprintf("%s__%s", slug, hash)
 	return host, id
 }
@@ -293,12 +297,14 @@ func slugFromPath(p string) string {
 	if p == "" || p == "/" {
 		return "root"
 	}
+
 	parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
 	last := parts[len(parts)-1]
 	last = slugRe.ReplaceAllString(last, "-")
 	if len(last) > 80 {
 		last = last[:80]
 	}
+
 	if last == "" || last == "-" {
 		return "page"
 	}
@@ -379,7 +385,7 @@ func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []by
 	}
 	contentPath := c.contentPath(host, id, mime)
 	contentPathTemp := contentPath + ".tmp"
-	if err := os.WriteFile(contentPathTemp, body, 0o644); err != nil {
+	if err := os.WriteFile(contentPathTemp, body, PermissionsNonExecutable); err != nil {
 		return err
 	}
 	if err := os.Rename(contentPathTemp, contentPath); err != nil {
@@ -403,7 +409,7 @@ func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []by
 	}
 
 	metaPathTemp := metaPath + ".tmp"
-	if err := os.WriteFile(metaPathTemp, metaBytes, 0o644); err != nil {
+	if err := os.WriteFile(metaPathTemp, metaBytes, PermissionsNonExecutable); err != nil {
 		return err
 	}
 	return os.Rename(metaPathTemp, metaPath)
@@ -430,7 +436,7 @@ func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, siz
 	}
 
 	metaPathTemp := metaPath + ".tmp"
-	if err := os.WriteFile(metaPathTemp, metaBytes, 0o644); err != nil {
+	if err := os.WriteFile(metaPathTemp, metaBytes, PermissionsNonExecutable); err != nil {
 		return err
 	}
 	return os.Rename(metaPathTemp, metaPath)
@@ -482,7 +488,7 @@ func extractLinks(base *url.URL, body []byte) []string {
 }
 
 func (c *Crawler) appendToQueueDedup(urls []string) {
-	f, err := os.OpenFile(c.opts.QueuePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(c.opts.QueuePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, PermissionsNonExecutable)
 	if err != nil {
 		return
 	}
@@ -495,12 +501,13 @@ func (c *Crawler) appendToQueueDedup(urls []string) {
 
 func (c *Crawler) logError(urlStr string, err error) {
 	_ = os.MkdirAll(filepath.Dir(c.opts.ErrorLogPath), PermissionsFull)
-	f, ferr := os.OpenFile(c.opts.ErrorLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if ferr != nil {
+	file, fileErr := os.OpenFile(c.opts.ErrorLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, PermissionsNonExecutable)
+	if fileErr != nil {
 		return
 	}
-	defer f.Close()
+
+	defer file.Close()
 	msg := strings.ReplaceAll(err.Error(), "\n", " ")
 	line := fmt.Sprintf("%s\t%s\t%s\n", time.Now().UTC().Format(time.RFC3339), urlStr, msg)
-	_, _ = f.WriteString(line)
+	_, err = file.WriteString(line)
 }
