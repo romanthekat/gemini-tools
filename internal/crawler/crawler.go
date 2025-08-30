@@ -138,7 +138,7 @@ func (c *Crawler) Run(ctx context.Context) error {
 			return err
 		}
 
-		fmt.Printf("fetching: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
+		fmt.Printf("\nfetching: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
 
 		// Ensure URL for request contains default port
 		reqURL, err := gemini.GetFullGeminiLink(linkUrl.String())
@@ -325,11 +325,15 @@ func (c *Crawler) metaPath(host, id string) string {
 
 func (c *Crawler) contentPath(host, id, mime string) string {
 	ext := ".bin"
-	lm := strings.ToLower(mime)
-	if strings.HasPrefix(lm, gemini.GeminiMediaType) {
+	mimeLower := strings.ToLower(mime)
+	if strings.HasPrefix(mimeLower, gemini.GeminiMediaType) {
 		ext = ".gmi"
-	} else if strings.HasPrefix(lm, "text/") {
+	} else if strings.HasPrefix(mimeLower, "text/") {
 		ext = ".txt"
+	} else if strings.HasPrefix(mimeLower, "image/jpeg") {
+		ext = ".jpg"
+	} else if strings.HasPrefix(mimeLower, "image/png") {
+		ext = ".png"
 	}
 	return filepath.Join(c.pagesDir(host), id+ext)
 }
