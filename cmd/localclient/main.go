@@ -59,8 +59,10 @@ func main() {
 
 	reader := bufio.NewReader(os.Stdin)
 	state := NewState()
+
 	printHelp()
 	showTop(state)
+	fmt.Println()
 
 	for {
 		input, err := getUserInput(reader)
