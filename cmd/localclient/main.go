@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +94,7 @@ func printHelp() {
 	fmt.Println("q\t\tquit")
 	fmt.Println("h\t\tprint this summary")
 	fmt.Println("g\t\topen Project Gemini homepage")
+	fmt.Println("t\t\tshow top 20 sites in local DB")
 	fmt.Println()
 }
 
@@ -117,6 +119,11 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		return nil, true, nil
 	case "g":
 		linkRaw = "gemini://geminiprotocol.net/"
+	case "t":
+		if err := showTop(state); err != nil {
+			fmt.Println("\u001B[31m", err.Error(), "\u001B[0m")
+		}
+		return nil, true, nil
 	case "b":
 		if len(state.History) < 2 {
 			fmt.Println("\u001B[31mNo history yet\u001B[0m")
@@ -317,4 +324,70 @@ func appendToQueue(canon string) {
 	}
 	defer f.Close()
 	_, _ = f.WriteString(canon + "\n")
+}
+
+// showTop lists top 20 hosts in local DB by number of saved pages
+func showTop(state *State) error {
+	entries, err := os.ReadDir(dbDir)
+	if err != nil {
+		return fmt.Errorf("read db dir failed: %w", err)
+	}
+	type item struct {
+		host  string
+		count int
+	}
+	items := make([]item, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		host := e.Name()
+		pagesPath := filepath.Join(dbDir, host, "pages")
+		pEntries, err := os.ReadDir(pagesPath)
+		if err != nil {
+			// skip hosts without pages dir
+			continue
+		}
+		cnt := 0
+		for _, pe := range pEntries {
+			if pe.IsDir() {
+				// skip meta/ or any other directories
+				continue
+			}
+			name := pe.Name()
+			if strings.HasSuffix(name, ".tmp") {
+				continue
+			}
+			// meta is stored under pages/meta/, so normal page files live directly under pages/
+			cnt++
+		}
+		if cnt > 0 {
+			items = append(items, item{host: host, count: cnt})
+		}
+	}
+	if len(items) == 0 {
+		fmt.Println("No pages found in local DB")
+		state.clearLinks()
+		return nil
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count == items[j].count {
+			return items[i].host < items[j].host
+		}
+		return items[i].count > items[j].count
+	})
+
+	state.clearLinks()
+	fmt.Println("Top sites by pages:")
+	limit := 20
+	if len(items) < limit {
+		limit = len(items)
+	}
+	for i := 0; i < limit; i++ {
+		it := items[i]
+		link := "gemini://" + it.host + "/"
+		state.Links = append(state.Links, link)
+		fmt.Printf("[%d] \u001B[34m%s\u001B[0m (%d pages)\n", i+1, it.host, it.count)
+	}
+	return nil
 }
