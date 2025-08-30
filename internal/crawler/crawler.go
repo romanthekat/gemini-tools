@@ -396,6 +396,8 @@ func extractLinks(base *url.URL, body []byte) []string {
 		if abs.Scheme != "gemini" {
 			continue
 		}
+		// Normalize host to lowercase to keep canonical form consistent
+		abs.Host = strings.ToLower(abs.Host)
 		abs.Fragment = ""
 		if abs.Path == "" {
 			abs.Path = "/"

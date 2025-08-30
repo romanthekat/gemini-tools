@@ -18,3 +18,5 @@
 .idea
 .fleet
 .DS_Store
+
+data/
