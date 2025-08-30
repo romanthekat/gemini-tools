@@ -163,7 +163,6 @@ func (c *Crawler) Run(ctx context.Context) error {
 			continue
 		}
 
-		mime := resp.Meta
 		if max := c.opts.MaxResponseMB; max > 0 && len(resp.Body) > max*1024*1024 {
 			err := fmt.Errorf("response too large: %d bytes", len(resp.Body))
 			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
@@ -172,6 +171,7 @@ func (c *Crawler) Run(ctx context.Context) error {
 			continue
 		}
 
+		mime := resp.Meta
 		if err := c.savePage(host, id, linkUrl, mime, resp.Body); err != nil {
 			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
 			c.logError(canonicalLink, err)
@@ -203,6 +203,7 @@ func (c *Crawler) Run(ctx context.Context) error {
 			fmt.Printf("discovered %d links (added %d), remaining %d\n", len(links), added, remaining(itemNum))
 		}
 	}
+
 	return nil
 }
 
@@ -341,6 +342,12 @@ func (c *Crawler) shouldFetch(host, id string) (bool, error) {
 	if err := json.Unmarshal(bytes, &meta); err != nil {
 		return true, nil // malformed meta, try fetching anew
 	}
+
+	//do not recrawl non-gemini files (e.g. images)
+	if !strings.HasPrefix(strings.ToLower(meta.MIME), gemini.GeminiMediaType) {
+		return false, nil
+	}
+
 	if time.Since(meta.LastCrawled) < c.opts.RecrawlWindow {
 		return false, nil
 	}
@@ -350,9 +357,10 @@ func (c *Crawler) shouldFetch(host, id string) (bool, error) {
 func (c *Crawler) throttle(host string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	now := time.Now()
-	if t, ok := c.lastReq[host]; ok {
-		elapsed := now.Sub(t)
+	if lastRequested, ok := c.lastReq[host]; ok {
+		elapsed := now.Sub(lastRequested)
 		if wait := c.opts.Throttle - elapsed; wait > 0 {
 			// Unlock during sleep to avoid blocking other hosts in future concurrency
 			c.mu.Unlock()
@@ -360,48 +368,52 @@ func (c *Crawler) throttle(host string) error {
 			c.mu.Lock()
 		}
 	}
+
 	c.lastReq[host] = time.Now()
 	return nil
 }
 
-func (c *Crawler) savePage(host, id string, u *url.URL, mime string, body []byte) error {
+func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []byte) error {
 	if err := os.MkdirAll(c.pagesDir(host), PermissionsFull); err != nil {
 		return err
 	}
-	cp := c.contentPath(host, id, mime)
-	tp := cp + ".tmp"
-	if err := os.WriteFile(tp, body, 0o644); err != nil {
+	contentPath := c.contentPath(host, id, mime)
+	contentPathTemp := contentPath + ".tmp"
+	if err := os.WriteFile(contentPathTemp, body, 0o644); err != nil {
 		return err
 	}
-	if err := os.Rename(tp, cp); err != nil {
+	if err := os.Rename(contentPathTemp, contentPath); err != nil {
 		return err
 	}
-	m := pageMeta{
-		URL:         canonicalString(u),
+
+	meta := pageMeta{
+		URL:         canonicalString(url),
 		LastCrawled: time.Now().UTC(),
 		Status:      "success",
 		MIME:        mime,
 		SizeBytes:   len(body),
 		Version:     1,
 	}
-	mb, _ := json.MarshalIndent(&m, "", "  ")
-	mp := c.metaPath(host, id)
+
+	metaBytes, _ := json.MarshalIndent(&meta, "", "  ")
+	metaPath := c.metaPath(host, id)
 	// ensure meta directory exists
-	if err := os.MkdirAll(filepath.Dir(mp), PermissionsFull); err != nil {
+	if err := os.MkdirAll(filepath.Dir(metaPath), PermissionsFull); err != nil {
 		return err
 	}
-	mtp := mp + ".tmp"
-	if err := os.WriteFile(mtp, mb, 0o644); err != nil {
+
+	metaPathTemp := metaPath + ".tmp"
+	if err := os.WriteFile(metaPathTemp, metaBytes, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(mtp, mp)
+	return os.Rename(metaPathTemp, metaPath)
 }
 
 func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, size int) error {
 	if err := os.MkdirAll(c.pagesDir(host), PermissionsFull); err != nil {
 		return err
 	}
-	m := pageMeta{
+	meta := pageMeta{
 		URL:         canonicalString(u),
 		LastCrawled: time.Now().UTC(),
 		Status:      status,
@@ -409,36 +421,42 @@ func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, siz
 		SizeBytes:   size,
 		Version:     1,
 	}
-	mb, _ := json.MarshalIndent(&m, "", "  ")
-	mp := c.metaPath(host, id)
+
+	metaBytes, _ := json.MarshalIndent(&meta, "", "  ")
+	metaPath := c.metaPath(host, id)
 	// ensure meta directory exists
-	if err := os.MkdirAll(filepath.Dir(mp), PermissionsFull); err != nil {
+	if err := os.MkdirAll(filepath.Dir(metaPath), PermissionsFull); err != nil {
 		return err
 	}
-	mtp := mp + ".tmp"
-	if err := os.WriteFile(mtp, mb, 0o644); err != nil {
+
+	metaPathTemp := metaPath + ".tmp"
+	if err := os.WriteFile(metaPathTemp, metaBytes, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(mtp, mp)
+	return os.Rename(metaPathTemp, metaPath)
 }
 
 func extractLinks(base *url.URL, body []byte) []string {
 	text := string(body)
 	lines := strings.Split(text, "\n")
 	out := make([]string, 0, 16)
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "=>") {
 			continue
 		}
+
 		line = strings.TrimSpace(strings.TrimPrefix(line, "=>"))
 		if line == "" {
 			continue
 		}
+
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
 		}
+
 		refRaw := fields[0]
 		ref, err := url.Parse(refRaw)
 		if err != nil {
@@ -451,6 +469,7 @@ func extractLinks(base *url.URL, body []byte) []string {
 		if abs.Scheme != "gemini" {
 			continue
 		}
+
 		// Normalize host to lowercase to keep canonical form consistent
 		abs.Host = strings.ToLower(abs.Host)
 		abs.Fragment = ""

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/romanthekat/gemini-tools/internal/gemini"
 )
 
 func newTestCrawler(t *testing.T, dir string) *Crawler {
@@ -110,6 +112,7 @@ func TestShouldFetch_RecrawlWindow(t *testing.T) {
 	recent := pageMeta{
 		URL:         canonicalString(u),
 		LastCrawled: time.Now().UTC(),
+		MIME:        gemini.GeminiMediaType,
 		Status:      "success",
 	}
 	mb, _ := jsonMarshalIndent(recent)
