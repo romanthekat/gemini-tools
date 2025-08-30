@@ -208,8 +208,8 @@ func TestAppendToQueueDedup(t *testing.T) {
 	if err := s.Err(); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if len(lines) != 2 {
-		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
 	}
 }
 

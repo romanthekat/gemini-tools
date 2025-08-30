@@ -456,11 +456,8 @@ func (c *Crawler) appendToQueueDedup(urls []string) {
 		return
 	}
 	defer f.Close()
+	// The caller already performed in-run deduplication using c.seen and built the list.
 	for _, u := range urls {
-		if _, ok := c.seen[u]; ok {
-			continue
-		}
-		c.seen[u] = struct{}{}
 		_, _ = f.WriteString(u + "\n")
 	}
 }
