@@ -130,7 +130,7 @@ func (c *Crawler) Run(ctx context.Context) error {
 			continue
 		}
 		if !should {
-			fmt.Printf("skip - to early to refresh: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
+			//fmt.Printf("skip - too early to refresh: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
 			continue
 		}
 
