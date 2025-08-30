@@ -100,7 +100,9 @@ func TestShouldFetch_RecrawlWindow(t *testing.T) {
 
 	u, _, _ := c.normalizeURL("gemini://example.org/path")
 	host, id := pageID(u)
-	if err := os.MkdirAll(c.pagesDir(host), 0o755); err != nil {
+	// Ensure meta directory exists for writing meta.json
+	metaDir := filepath.Dir(c.metaPath(host, id))
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 

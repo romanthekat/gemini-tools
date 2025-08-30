@@ -302,7 +302,7 @@ func (c *Crawler) pagesDir(host string) string {
 }
 
 func (c *Crawler) metaPath(host, id string) string {
-	return filepath.Join(c.pagesDir(host), id+".meta.json")
+	return filepath.Join(c.pagesDir(host), "meta", id+".meta.json")
 }
 
 func (c *Crawler) contentPath(host, id, mime string) string {
@@ -374,6 +374,10 @@ func (c *Crawler) savePage(host, id string, u *url.URL, mime string, body []byte
 	}
 	mb, _ := json.MarshalIndent(&m, "", "  ")
 	mp := c.metaPath(host, id)
+	// ensure meta directory exists
+	if err := os.MkdirAll(filepath.Dir(mp), 0o755); err != nil {
+		return err
+	}
 	mtp := mp + ".tmp"
 	if err := os.WriteFile(mtp, mb, 0o644); err != nil {
 		return err
@@ -395,6 +399,10 @@ func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, siz
 	}
 	mb, _ := json.MarshalIndent(&m, "", "  ")
 	mp := c.metaPath(host, id)
+	// ensure meta directory exists
+	if err := os.MkdirAll(filepath.Dir(mp), 0o755); err != nil {
+		return err
+	}
 	mtp := mp + ".tmp"
 	if err := os.WriteFile(mtp, mb, 0o644); err != nil {
 		return err
