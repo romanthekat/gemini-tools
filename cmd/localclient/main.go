@@ -60,6 +60,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	state := NewState()
 	printHelp()
+	showTop(state)
 
 	for {
 		input, err := getUserInput(reader)
