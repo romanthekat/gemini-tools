@@ -104,7 +104,6 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 
 	case "g":
 		linkRaw = "gemini://geminiprotocol.net:1965/"
-		fmt.Println(">", linkRaw)
 
 	case "b":
 		if len(state.History) < 2 {
@@ -114,7 +113,6 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 
 		linkRaw = state.History[len(state.History)-2]
 		state.History = state.History[:len(state.History)-2]
-		fmt.Println(">", linkRaw)
 
 	default:
 		// Treat it as link number
@@ -132,10 +130,10 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 			}
 
 			linkRaw = state.Links[index-1]
-			fmt.Println(">", linkRaw)
 		}
 	}
 
+	fmt.Println(">", linkRaw)
 	link, err := gemini.GetFullGeminiLink(linkRaw)
 	if err != nil {
 		return nil, false, fmt.Errorf("error generating gemini URL: %w", err)
