@@ -81,7 +81,7 @@ type pageMeta struct {
 	Version     int       `json:"version"`
 }
 
-// Run processes the queue file once (single pass)
+// Run processes the queue and continues while new items are added (single worker)
 func (c *Crawler) Run(ctx context.Context) error {
 	qf, err := os.Open(c.opts.QueuePath)
 	if err != nil {
@@ -93,24 +93,38 @@ func (c *Crawler) Run(ctx context.Context) error {
 		return fmt.Errorf("mkdir db: %w", err)
 	}
 
+	// Load initial queue into memory
+	work := make([]string, 0, 1024)
 	scanner := bufio.NewScanner(qf)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		work = append(work, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan queue: %w", err)
+	}
+
+	remaining := func(cur int) int { return len(work) - cur - 1 }
+
+	for i := 0; i < len(work); i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		u, canon, err := c.normalizeURL(line)
+
+		raw := strings.TrimSpace(work[i])
+		u, canon, err := c.normalizeURL(raw)
 		if err != nil {
 			// not a valid gemini URL, skip silently
 			continue
 		}
 		if _, ok := c.seen[canon]; ok {
+			// already processed/queued in this run
 			continue
 		}
 		c.seen[canon] = struct{}{}
@@ -118,11 +132,12 @@ func (c *Crawler) Run(ctx context.Context) error {
 		host, id := pageID(u)
 		should, err := c.shouldFetch(host, id)
 		if err != nil {
+			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
 			c.logError(canon, err)
 			continue
 		}
 		if !should {
-			// Skip recent page
+			fmt.Printf("skip recent: %s (remaining %d)\n", canon, remaining(i))
 			continue
 		}
 
@@ -130,9 +145,12 @@ func (c *Crawler) Run(ctx context.Context) error {
 			return err
 		}
 
+		fmt.Printf("fetching: %s (remaining %d)\n", canon, remaining(i))
+
 		// Ensure URL for request contains default port
 		reqURL, err := gemini.GetFullGeminiLink(u.String())
 		if err != nil {
+			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
 			c.logError(canon, err)
 			_ = c.writeErrorMeta(host, id, u, "canon-error", 0)
 			continue
@@ -140,12 +158,14 @@ func (c *Crawler) Run(ctx context.Context) error {
 
 		resp, err := gemini.DoRequest(reqURL)
 		if err != nil {
+			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
 			c.logError(canon, err)
 			_ = c.writeErrorMeta(host, id, u, "request-error", 0)
 			continue
 		}
 
 		if resp.Status != gemini.StatusSuccess {
+			fmt.Printf("error: %s status %d: %s (remaining %d)\n", canon, resp.Status, resp.Meta, remaining(i))
 			c.logError(canon, fmt.Errorf("status %d: %s", resp.Status, resp.Meta))
 			_ = c.writeErrorMeta(host, id, u, fmt.Sprintf("status-%d", resp.Status), len(resp.Body))
 			continue
@@ -154,27 +174,42 @@ func (c *Crawler) Run(ctx context.Context) error {
 		mime := resp.Meta
 		if max := c.opts.MaxResponseMB; max > 0 && len(resp.Body) > max*1024*1024 {
 			err := fmt.Errorf("response too large: %d bytes", len(resp.Body))
+			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
 			c.logError(canon, err)
 			_ = c.writeErrorMeta(host, id, u, "too-large", len(resp.Body))
 			continue
 		}
 
 		if err := c.savePage(host, id, u, mime, resp.Body); err != nil {
+			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
 			c.logError(canon, err)
 			_ = c.writeErrorMeta(host, id, u, "save-error", len(resp.Body))
 			continue
 		}
 
+		fmt.Printf("saved: %s/%s %s %dB (remaining %d)\n", host, id, mime, len(resp.Body), remaining(i))
+
 		// Extract and append links for gemtext only
 		if strings.HasPrefix(strings.ToLower(mime), gemini.GeminiMediaType) {
 			links := extractLinks(u, resp.Body)
+			added := 0
 			if len(links) > 0 {
-				c.appendToQueueDedup(links)
+				toAdd := make([]string, 0, len(links))
+				for _, l := range links {
+					if _, ok := c.seen[l]; ok {
+						continue
+					}
+					c.seen[l] = struct{}{}
+					toAdd = append(toAdd, l)
+					work = append(work, l)
+				}
+				if len(toAdd) > 0 {
+					c.appendToQueueDedup(toAdd)
+					added = len(toAdd)
+				}
 			}
+			fmt.Printf("discovered %d links (added %d), remaining %d\n", len(links), added, remaining(i))
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scan queue: %w", err)
 	}
 	return nil
 }
