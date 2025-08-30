@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -250,5 +251,43 @@ func TestProcessSuccessfulResponsePlainText(t *testing.T) {
 	// History updated
 	if got := state.History; len(got) != 1 || got[0] != link.String() {
 		t.Errorf("history not updated for plain text: %v", got)
+	}
+}
+
+// Negative scenarios
+type failingReader struct{}
+
+func (f failingReader) Read(p []byte) (int, error) { return 0, errors.New("read error") }
+
+// Test getUserInput propagates reader error
+func TestGetUserInputError(t *testing.T) {
+	bad := bufio.NewReader(failingReader{})
+	_, err := getUserInput(bad)
+	if err == nil {
+		t.Fatalf("expected error from getUserInput, got nil")
+	}
+}
+
+// Test processLink returns error on malformed URL in link line
+func TestProcessLinkMalformedURL(t *testing.T) {
+	state := NewState()
+	base, _ := url.Parse("gemini://example.com:1965/")
+	line := "=> %zz label"
+	if err := processLink(state, base, line); err == nil {
+		t.Fatalf("expected error for malformed URL in processLink")
+	}
+}
+
+// Test processSuccessfulResponse returns error on unsupported content-type and does not update history
+func TestProcessSuccessfulResponseUnsupportedType(t *testing.T) {
+	state := NewState()
+	link, _ := url.Parse("gemini://example.com:1965/")
+	resp := &gemini.Response{Status: gemini.StatusSuccess, Meta: "application/json", Body: []byte("{}")}
+	err := processSuccessfulResponse(state, link, resp)
+	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("expected unsupported type error, got %v", err)
+	}
+	if len(state.History) != 0 {
+		t.Fatalf("history should not be updated on error, got %v", state.History)
 	}
 }
