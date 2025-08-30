@@ -22,13 +22,13 @@ func newTestCrawler(t *testing.T, dir string) *Crawler {
 		ErrorLogPath:  filepath.Join(dir, "error.log"),
 		Throttle:      100 * time.Millisecond,
 		RecrawlWindow: 72 * time.Hour,
-		MaxResponseMB: 10,
+		MaxResponseKB: 10,
 	}
-	return New(opts)
+	return New(opts, nil)
 }
 
 func TestNormalizeAndCanonicalAndPageID(t *testing.T) {
-	c := New(Options{})
+	c := New(Options{}, nil)
 
 	u, canon, err := c.normalizeURL("gemini://Example.org:1965/foo/bar#frag")
 	if err != nil {
@@ -78,7 +78,8 @@ func TestExtractLinks(t *testing.T) {
 		"not a link",
 	}, "\n"))
 
-	links := extractLinks(base, body)
+	var crawler *Crawler
+	links := crawler.extractLinks(base, body)
 	want := map[string]bool{
 		"gemini://example.org/abs":                      true,
 		"gemini://example.org/dir/rel":                  true,
@@ -100,7 +101,7 @@ func TestShouldFetch_RecrawlWindow(t *testing.T) {
 	dir := t.TempDir()
 	c := newTestCrawler(t, dir)
 
-	u, _, _ := c.normalizeURL("gemini://example.org/path")
+	u, canon, _ := c.normalizeURL("gemini://example.org/path")
 	host, id := pageID(u)
 	// Ensure meta directory exists for writing meta.json
 	metaDir := filepath.Dir(c.metaPath(host, id))
@@ -120,7 +121,7 @@ func TestShouldFetch_RecrawlWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	should, err := c.shouldFetch(host, id)
+	should, err := c.shouldFetch(Job{u, canon, host, id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,12 +137,23 @@ func TestShouldFetch_RecrawlWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	should, err = c.shouldFetch(host, id)
+	//refresh seen map, as this link was already seen
+	c.seen = make(map[string]struct{})
+	should, err = c.shouldFetch(Job{u, canon, host, id})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !should {
 		t.Fatalf("expected shouldFetch=true for old meta")
+	}
+
+	//now it was seen, shouldn't be fetched
+	should, err = c.shouldFetch(Job{u, canon, host, id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if should {
+		t.Fatalf("expected shouldFetch=false for old meta")
 	}
 }
 
@@ -155,15 +167,18 @@ func TestSavePage_WritesFilesAndMeta(t *testing.T) {
 	c := newTestCrawler(t, dir)
 	c.opts.RecrawlWindow = time.Hour
 
-	u, _, _ := c.normalizeURL("gemini://example.org/notes.gmi")
+	u, canon, _ := c.normalizeURL("gemini://example.org/notes.gmi")
 	host, id := pageID(u)
 	content := []byte("=> /next\n# Title\n")
 	mime := "text/gemini; charset=utf-8"
-	if err := c.savePage(host, id, u, mime, content); err != nil {
+	if err := c.savePage(Job{u, canon, host, id}, mime, content); err != nil {
 		t.Fatalf("savePage: %v", err)
 	}
 
-	contentPath := c.contentPath(host, id, mime)
+	contentPath, err := c.contentPath(host, id, mime)
+	if err != nil {
+		t.Fatalf("contentPath: %v", err)
+	}
 	if _, err := os.Stat(contentPath); err != nil {
 		t.Fatalf("content missing: %v", err)
 	}
@@ -246,7 +261,7 @@ func TestThrottle_Waits(t *testing.T) {
 	host := "example.org"
 	c.lastReq[host] = time.Now()
 	start := time.Now()
-	if err := c.throttle(host); err != nil {
+	if err := c.throttle(Job{nil, "", host, ""}); err != nil {
 		t.Fatalf("throttle: %v", err)
 	}
 	elapsed := time.Since(start)

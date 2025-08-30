@@ -401,7 +401,7 @@ func showTop(state *State) error {
 
 	state.clearLinks()
 	fmt.Println("Top sites by pages:")
-	limit := 42
+	limit := 256
 	if len(items) < limit {
 		limit = len(items)
 	}

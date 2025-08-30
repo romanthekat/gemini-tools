@@ -18,5 +18,5 @@ Use `go test ./...` to validate current implementation.
 
 
 ## cmd/crawler
-Simple crawler that will crawl a list of domains and save the pages to a local database.  
+Simple crawler that will crawl a list of pages and save them to a local database.  
 Can be also read offline using `cmd/localclient`.

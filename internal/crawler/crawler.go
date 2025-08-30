@@ -19,34 +19,34 @@ import (
 	"github.com/romanthekat/gemini-tools/internal/gemini"
 )
 
-// Options controls crawler behavior
-// Defaults: set by New if zero values provided
-//  - DBDir: "data"
-//  - QueuePath: "queue.txt"
-//  - ErrorLogPath: "error_queue.log"
-//  - Throttle: 1.5s
-//  - RecrawlWindow: 72h
-//  - MaxResponseMB: 10 (soft cap)
-//
-// Single-pass queue processing
-
 type Options struct {
 	DBDir         string
 	QueuePath     string
 	ErrorLogPath  string
 	Throttle      time.Duration
 	RecrawlWindow time.Duration
-	MaxResponseMB int
+	MaxResponseKB int
+	Workers       int
 }
 
 type Crawler struct {
+	ctx context.Context
+	wg  sync.WaitGroup
+
 	opts    Options
 	seen    map[string]struct{}
-	lastReq map[string]time.Time
-	mu      sync.Mutex
+	lastReq map[string]time.Time //TODO replace with Host type or IP address
+
+	jobsCandidates   chan RawJob
+	workersHostsList []map[Host]struct{}
+	workersJobsList  []chan Job
+
+	seenMu      sync.Mutex // protects seen map
+	lastReqMu   sync.Mutex // protects lastReq map
+	fileQueueMu sync.Mutex // protects queue file append operations
 }
 
-func New(opts Options) *Crawler {
+func New(opts Options, ctx context.Context) *Crawler {
 	if opts.DBDir == "" {
 		opts.DBDir = "data"
 	}
@@ -62,13 +62,31 @@ func New(opts Options) *Crawler {
 	if opts.RecrawlWindow == 0 {
 		opts.RecrawlWindow = 72 * time.Hour
 	}
-	if opts.MaxResponseMB == 0 {
-		opts.MaxResponseMB = 10
+	if opts.MaxResponseKB == 0 {
+		opts.MaxResponseKB = 512
 	}
+	if opts.Workers <= 0 {
+		opts.Workers = 4
+	}
+
+	var workersJobsList []chan Job
+	for i := 0; i < opts.Workers; i++ {
+		workersJobsList = append(workersJobsList, make(chan Job, 2048))
+	}
+
+	var workersHostsList []map[Host]struct{}
+	for i := 0; i < opts.Workers; i++ {
+		workersHostsList = append(workersHostsList, make(map[Host]struct{}))
+	}
+
 	return &Crawler{
-		opts:    opts,
-		seen:    make(map[string]struct{}, 1024),
-		lastReq: make(map[string]time.Time),
+		ctx:              ctx,
+		opts:             opts,
+		seen:             make(map[string]struct{}, 4096),
+		lastReq:          make(map[string]time.Time),
+		jobsCandidates:   make(chan RawJob, 8192),
+		workersJobsList:  workersJobsList,
+		workersHostsList: workersHostsList,
 	}
 }
 
@@ -84,128 +102,292 @@ type pageMeta struct {
 	Version     int       `json:"version"`
 }
 
+type RawJob string
+type Host string
+
+type Job struct {
+	link      *url.URL
+	canonical string
+
+	host string
+	id   string
+}
+
 // Run processes the queue and continues while new items are added (single worker)
-func (c *Crawler) Run(ctx context.Context) error {
+func (c *Crawler) Run() error {
+	queue, err := c.readFileQueue()
+	if err != nil {
+		return err
+	}
+
+	go c.startJobsCandidatesProcessor()
+	go c.processInitialQueue(queue)
+	go c.scheduledPrintWorkersStats()
+	c.startWorkers()
+
+	c.wg.Wait()
+
+	return nil
+}
+
+func (c *Crawler) startJobsCandidatesProcessor() {
+	for jobCandidate := range c.jobsCandidates {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		err := c.processJobCandidate(jobCandidate)
+		if err != nil {
+			//TODO skip errors for now, but can be useful to analyse later
+			//fmt.Println(err)
+		}
+	}
+}
+
+func (c *Crawler) readFileQueue() ([]string, error) {
 	queueFile, err := os.Open(c.opts.QueuePath)
 	if err != nil {
-		return fmt.Errorf("open queue: %w", err)
+		return nil, fmt.Errorf("open queue: %w", err)
 	}
 	defer queueFile.Close()
 
 	if err := os.MkdirAll(c.opts.DBDir, PermissionsFull); err != nil {
-		return fmt.Errorf("mkdir db: %w", err)
+		return nil, fmt.Errorf("mkdir db: %w", err)
 	}
 
 	// Load initial queue into memory
 	queue, err := c.getQueue(queueFile)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	return queue, nil
+}
+
+func (c *Crawler) startWorkers() {
+	for i := range c.opts.Workers {
+		//fmt.Printf("starting worker %d\n", i)
+		//wg.Go(worker(workersJobsList[i], wg, c, i))
+
+		c.wg.Go(func() {
+			c.worker(i, c.workersJobsList[i])
+		})
+	}
+}
+
+func (c *Crawler) processJobCandidate(job RawJob) error {
+	jobString := string(job)
+
+	//gemini://)/
+	if len(job) <= 10 {
+		return fmt.Errorf("rejecting invalid URL: %s", job)
 	}
 
-	remaining := func(current int) int { return len(queue) - current - 1 }
+	if strings.HasPrefix(string(job), "gemini://!") {
+		return fmt.Errorf("rejecting invalid URL: %s", job)
+	}
 
-	for itemNum := 0; itemNum < len(queue); itemNum++ {
+	link, canonical, err := c.normalizeURL(jobString)
+	//TODO only get geminiLink? gemini.GetFullGeminiLink
+	if err != nil {
+		//TODO add to ignore list?
+		return fmt.Errorf("error: invalid URL: %s", job)
+	}
+
+	if strings.HasSuffix(jobString, ".pdf") ||
+		strings.HasSuffix(jobString, ".zip") ||
+		strings.HasSuffix(jobString, ".jpg") ||
+		strings.HasSuffix(jobString, ".png") ||
+		strings.HasSuffix(jobString, ".bin") {
+		return fmt.Errorf("rejecting binary files for now: %s", job)
+	}
+
+	//TODO workaround to avoid humongous sites
+	geoguessGamePastFirstCountry := strings.Contains(jobString, "gemini://gemi.dev") &&
+		strings.Contains(jobString, "cgi-bin/witw.cgi/game") &&
+		!strings.Contains(jobString, "?,")
+	if geoguessGamePastFirstCountry ||
+		//strings.Contains(jobString, "gemini://gmi.noulin.net") ||
+		strings.Contains(jobString, "gemini://musicbrainz.uploadedlobster.com") ||
+		strings.Contains(jobString, "gemini://git.thebackupbox.net") {
+		return fmt.Errorf("rejected due to custom rules: %s", job)
+	}
+
+	host, id := pageID(link)
+	workerNumber := c.findWorkerToDoTheJob(host)
+
+	c.wg.Go(func() {
+		c.workersJobsList[workerNumber] <- Job{
+			link:      link,
+			canonical: canonical,
+			host:      host,
+			id:        id,
+		}
+	})
+
+	return nil
+}
+
+func (c *Crawler) processInitialQueue(queue []string) {
+	for jobNum := 0; jobNum < len(queue); jobNum++ {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-c.ctx.Done():
+			return
 		default:
 		}
 
-		linkUrl, canonicalLink, err := c.normalizeURL(queue[itemNum])
-		if err != nil {
-			// not a valid gemini URL, skip silently
-			continue
-		}
-		if _, ok := c.seen[canonicalLink]; ok {
-			// already processed/queued in this run
-			continue
-		}
-		c.seen[canonicalLink] = struct{}{}
-
-		host, id := pageID(linkUrl)
-		should, err := c.shouldFetch(host, id)
-		if err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
-			c.logError(canonicalLink, err)
-			continue
-		}
-		if !should {
-			//fmt.Printf("skip - too early to refresh: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
-			continue
+		if jobNum%100_000 == 0 {
+			fmt.Printf("❗ file queue processing progress: %d out of %d\n", jobNum, len(queue))
 		}
 
-		if err := c.throttle(host); err != nil {
-			return err
-		}
+		job := queue[jobNum]
+		c.jobsCandidates <- RawJob(job)
+	}
+}
 
-		fmt.Printf("\nfetching: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
+func (c *Crawler) scheduledPrintWorkersStats() {
+	t := time.NewTicker(5 * time.Second)
+	for {
+		select {
+		case <-t.C:
+			{
+				fmt.Printf("workers stats:\n")
+				totalActiveWorkers := 0
 
-		// Ensure URL for request contains default port
-		reqURL, err := gemini.GetFullGeminiLink(linkUrl.String())
-		if err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
-			c.logError(canonicalLink, err)
-			_ = c.writeErrorMeta(host, id, linkUrl, "canonicalLink-error", 0)
-			continue
-		}
-
-		resp, err := gemini.DoRequest(reqURL)
-		if err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
-			c.logError(canonicalLink, err)
-			_ = c.writeErrorMeta(host, id, linkUrl, "request-error", 0)
-			continue
-		}
-
-		if resp.Status != gemini.StatusSuccess {
-			fmt.Printf("error: %s status %d: %s (remaining %d)\n", canonicalLink, resp.Status, resp.Meta, remaining(itemNum))
-			c.logError(canonicalLink, fmt.Errorf("status %d: %s", resp.Status, resp.Meta))
-			_ = c.writeErrorMeta(host, id, linkUrl, fmt.Sprintf("status-%d", resp.Status), len(resp.Body))
-			continue
-		}
-
-		if max := c.opts.MaxResponseMB; max > 0 && len(resp.Body) > max*1024*1024 {
-			err := fmt.Errorf("response too large: %d bytes", len(resp.Body))
-			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
-			c.logError(canonicalLink, err)
-			_ = c.writeErrorMeta(host, id, linkUrl, "too-large", len(resp.Body))
-			continue
-		}
-
-		mime := resp.Meta
-		if err := c.savePage(host, id, linkUrl, mime, resp.Body); err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
-			c.logError(canonicalLink, err)
-			_ = c.writeErrorMeta(host, id, linkUrl, "save-error", len(resp.Body))
-			continue
-		}
-
-		fmt.Printf("saved: %s/%s %s %dB (remaining %d)\n", host, id, mime, len(resp.Body), remaining(itemNum))
-
-		// Extract and append links for gemtext only
-		if strings.HasPrefix(strings.ToLower(mime), gemini.GeminiMediaType) {
-			links := extractLinks(linkUrl, resp.Body)
-			added := 0
-			if len(links) > 0 {
-				toAdd := make([]string, 0, len(links))
-				for _, l := range links {
-					if _, ok := c.seen[l]; ok {
-						continue
+				for i, jobs := range c.workersJobsList {
+					jobsLength := len(jobs)
+					if jobsLength > 0 {
+						fmt.Printf("worker %d has %d jobs\n", i, jobsLength)
+						totalActiveWorkers += 1
 					}
-					c.seen[l] = struct{}{}
-					toAdd = append(toAdd, l)
-					queue = append(queue, l)
 				}
-				if len(toAdd) > 0 {
-					c.appendToQueueDedup(toAdd)
-					added = len(toAdd)
-				}
+				//fmt.Printf("total jobs in queue: %d\n", len(jobs))
+				fmt.Printf("total active workers: %d\n", totalActiveWorkers)
+				fmt.Println()
 			}
-			fmt.Printf("discovered %d links (added %d), remaining %d\n", len(links), added, remaining(itemNum))
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+func (c *Crawler) findWorkerToDoTheJob(host string) int {
+	//not correct in concurrent env, but good enough as an approximation
+	var minJobs int
+	var minJobsWorkerNum int
+
+	for workerNum, workersHosts := range c.workersHostsList {
+		queueLen := len(c.workersJobsList[workerNum])
+		if queueLen <= minJobs {
+			minJobs = queueLen
+			minJobsWorkerNum = workerNum
+		}
+
+		if _, servesThisHost := workersHosts[Host(host)]; servesThisHost {
+			return workerNum
 		}
 	}
 
-	return nil
+	// if no one has served this host - make a random worker pick it up
+	c.workersHostsList[minJobsWorkerNum][Host(host)] = struct{}{}
+	return minJobsWorkerNum
+}
+
+func (c *Crawler) worker(number int, jobs <-chan Job) {
+	for job := range jobs {
+		should, err := c.shouldFetch(job)
+		if err != nil {
+			fmt.Printf("error: %s %v\n", job.canonical, err)
+			c.logError(job.canonical, err)
+			continue
+		}
+		if !should {
+			//fmt.Printf("skip - too early to refresh: %s (remaining %d)\n", canonicalLink, remaining(linkNum))
+			continue
+		}
+
+		if err := c.throttle(job); err != nil {
+			return
+		}
+
+		fmt.Printf("fetching: %s\n", job.canonical)
+		err, status, length := c.doRequest(job)
+		if err != nil {
+			c.logError(job.canonical, err)
+			_ = c.writeErrorMeta(job, status, length)
+		}
+	}
+
+	fmt.Printf("job channel for worker is closed")
+}
+
+func (c *Crawler) doRequest(job Job) (error, string, int) {
+	// Ensure URL for request contains default port
+	reqURL, err := gemini.GetFullGeminiLink(job.canonical)
+	if err != nil {
+		return err, "job.canonical-error", 0
+	}
+
+	resp, err := gemini.DoRequest(reqURL)
+	if err != nil {
+		return err, "request-error", 0
+	}
+
+	responseLength := len(resp.Body)
+
+	if resp.Status != gemini.StatusSuccess {
+		err := fmt.Errorf("status %d: %s", resp.Status, resp.Meta)
+		return err, fmt.Sprintf("status-%d", resp.Status), responseLength
+	}
+
+	textualResponse := strings.Contains(job.canonical, ".gmi") ||
+		strings.Contains(job.canonical, ".txt")
+	if !textualResponse {
+		if max := c.opts.MaxResponseKB; max > 0 && responseLength > max*1024 {
+			err := fmt.Errorf("response too large: %d bytes", responseLength)
+			return err, "too-large", responseLength
+		}
+	}
+
+	mime := resp.Meta
+	if err := c.savePage(job, mime, resp.Body); err != nil {
+		return err, "save-error", responseLength
+	}
+
+	//fmt.Printf("saved: %s/%s %s %dB\n", host, id, mime, responseLength)
+	c.processBody(job, resp)
+
+	return nil, "", 0
+}
+
+func (c *Crawler) processBody(job Job, resp *gemini.Response) {
+	// Extract and append links for gemtext only
+	if strings.HasPrefix(strings.ToLower(resp.Meta), gemini.GeminiMediaType) {
+		links := c.extractLinks(job.link, resp.Body)
+		added := 0
+		if len(links) > 0 {
+			toAdd := make([]string, 0, len(links))
+			for _, link := range links {
+				if c.checkSeen(link) {
+					continue
+				}
+
+				toAdd = append(toAdd, link)
+				c.jobsCandidates <- RawJob(link)
+			}
+
+			//TODO should only append canonical (non-rejected) urls, this impl looks wonky
+			if len(toAdd) > 0 {
+				c.appendToQueueDedup(toAdd)
+				added = len(toAdd)
+			}
+		}
+		if added > 0 {
+			fmt.Printf("discovered %d links (added %d)\n", len(links), added)
+		}
+	}
 }
 
 func (c *Crawler) getQueue(queueFile *os.File) ([]string, error) {
@@ -233,17 +415,20 @@ func (c *Crawler) normalizeURL(raw string) (*url.URL, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+
 	if u.Scheme == "" {
 		u.Scheme = "gemini"
 	}
 	if u.Scheme != "gemini" {
 		return nil, "", fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}
+
 	u.Fragment = ""
 	u.Host = strings.ToLower(u.Host)
 	if u.Path == "" {
 		u.Path = "/"
 	}
+
 	// Build canonical without default port
 	canon := canonicalString(u)
 	return u, canon, nil
@@ -323,7 +508,7 @@ func (c *Crawler) metaPath(host, id string) string {
 	return filepath.Join(c.pagesDir(host), "meta", id+".meta.json")
 }
 
-func (c *Crawler) contentPath(host, id, mime string) string {
+func (c *Crawler) contentPath(host, id, mime string) (string, error) {
 	ext := ".bin"
 	mimeLower := strings.ToLower(mime)
 	if strings.HasPrefix(mimeLower, gemini.GeminiMediaType) {
@@ -335,11 +520,19 @@ func (c *Crawler) contentPath(host, id, mime string) string {
 	} else if strings.HasPrefix(mimeLower, "image/png") {
 		ext = ".png"
 	}
-	return filepath.Join(c.pagesDir(host), id+ext)
+	return filepath.Join(c.pagesDir(host), id+ext), nil
 }
 
-func (c *Crawler) shouldFetch(host, id string) (bool, error) {
-	metaPath := c.metaPath(host, id)
+func (c *Crawler) shouldFetch(job Job) (bool, error) {
+	//seen in this session
+	if c.checkSeen(job.canonical) {
+		// already processed/queued in this run
+		return false, nil
+	}
+	c.addSeen(job.canonical)
+
+	//check already in db
+	metaPath := c.metaPath(job.host, job.id)
 	bytes, err := os.ReadFile(metaPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -364,30 +557,32 @@ func (c *Crawler) shouldFetch(host, id string) (bool, error) {
 	return true, nil
 }
 
-func (c *Crawler) throttle(host string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// TODO both IP instead of host?
+func (c *Crawler) throttle(job Job) error {
+	c.lastReqMu.Lock()
+	defer c.lastReqMu.Unlock()
 
 	now := time.Now()
-	if lastRequested, ok := c.lastReq[host]; ok {
+	if lastRequested, ok := c.lastReq[job.host]; ok {
 		elapsed := now.Sub(lastRequested)
 		if wait := c.opts.Throttle - elapsed; wait > 0 {
 			// Unlock during sleep to avoid blocking other hosts in future concurrency
-			c.mu.Unlock()
 			time.Sleep(wait)
-			c.mu.Lock()
 		}
 	}
 
-	c.lastReq[host] = time.Now()
+	c.lastReq[job.host] = time.Now()
 	return nil
 }
 
-func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []byte) error {
-	if err := os.MkdirAll(c.pagesDir(host), PermissionsFull); err != nil {
+func (c *Crawler) savePage(job Job, mime string, body []byte) error {
+	if err := os.MkdirAll(c.pagesDir(job.host), PermissionsFull); err != nil {
 		return err
 	}
-	contentPath := c.contentPath(host, id, mime)
+	contentPath, err := c.contentPath(job.host, job.id, mime)
+	if err != nil {
+		return err
+	}
 	contentPathTemp := contentPath + ".tmp"
 	if err := os.WriteFile(contentPathTemp, body, PermissionsNonExecutable); err != nil {
 		return err
@@ -397,7 +592,7 @@ func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []by
 	}
 
 	meta := pageMeta{
-		URL:         canonicalString(url),
+		URL:         job.canonical,
 		LastCrawled: time.Now().UTC(),
 		Status:      "success",
 		MIME:        mime,
@@ -406,7 +601,7 @@ func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []by
 	}
 
 	metaBytes, _ := json.MarshalIndent(&meta, "", "  ")
-	metaPath := c.metaPath(host, id)
+	metaPath := c.metaPath(job.host, job.id)
 	// ensure meta directory exists
 	if err := os.MkdirAll(filepath.Dir(metaPath), PermissionsFull); err != nil {
 		return err
@@ -419,12 +614,13 @@ func (c *Crawler) savePage(host, id string, url *url.URL, mime string, body []by
 	return os.Rename(metaPathTemp, metaPath)
 }
 
-func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, size int) error {
-	if err := os.MkdirAll(c.pagesDir(host), PermissionsFull); err != nil {
+// TODO unify with savePage meta section?
+func (c *Crawler) writeErrorMeta(job Job, status string, size int) error {
+	if err := os.MkdirAll(c.pagesDir(job.host), PermissionsFull); err != nil {
 		return err
 	}
 	meta := pageMeta{
-		URL:         canonicalString(u),
+		URL:         job.canonical,
 		LastCrawled: time.Now().UTC(),
 		Status:      status,
 		MIME:        "",
@@ -433,7 +629,7 @@ func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, siz
 	}
 
 	metaBytes, _ := json.MarshalIndent(&meta, "", "  ")
-	metaPath := c.metaPath(host, id)
+	metaPath := c.metaPath(job.host, job.id)
 	// ensure meta directory exists
 	if err := os.MkdirAll(filepath.Dir(metaPath), PermissionsFull); err != nil {
 		return err
@@ -446,7 +642,7 @@ func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, siz
 	return os.Rename(metaPathTemp, metaPath)
 }
 
-func extractLinks(base *url.URL, body []byte) []string {
+func (c *Crawler) extractLinks(base *url.URL, body []byte) []string {
 	text := string(body)
 	lines := strings.Split(text, "\n")
 	out := make([]string, 0, 16)
@@ -486,12 +682,26 @@ func extractLinks(base *url.URL, body []byte) []string {
 		if abs.Path == "" {
 			abs.Path = "/"
 		}
-		out = append(out, canonicalString(abs))
+
+		_, canon, err := c.normalizeURL(abs.String())
+		if err != nil {
+			continue
+		}
+
+		out = append(out, canon)
 	}
 	return out
 }
 
+func (c *Crawler) addSeen(link string) {
+	c.seenMu.Lock()
+	defer c.seenMu.Unlock()
+	c.seen[link] = struct{}{}
+}
+
 func (c *Crawler) appendToQueueDedup(urls []string) {
+	c.fileQueueMu.Lock()
+	defer c.fileQueueMu.Unlock()
 	f, err := os.OpenFile(c.opts.QueuePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, PermissionsNonExecutable)
 	if err != nil {
 		return
@@ -499,7 +709,12 @@ func (c *Crawler) appendToQueueDedup(urls []string) {
 	defer f.Close()
 	// The caller already performed in-run deduplication using c.seen and built the list.
 	for _, u := range urls {
-		_, _ = f.WriteString(u + "\n")
+		_, canonical, err := c.normalizeURL(u)
+		if err != nil {
+			continue
+		}
+
+		_, _ = f.WriteString(canonical + "\n")
 	}
 }
 
@@ -512,6 +727,13 @@ func (c *Crawler) logError(urlStr string, err error) {
 
 	defer file.Close()
 	msg := strings.ReplaceAll(err.Error(), "\n", " ")
-	line := fmt.Sprintf("%s\t%s\t%s\n", time.Now().UTC().Format(time.RFC3339), urlStr, msg)
+	line := fmt.Sprintf("%s\t%s\t%s\n", urlStr, time.Now().UTC().Format(time.RFC3339), msg)
 	_, err = file.WriteString(line)
+}
+
+func (c *Crawler) checkSeen(link string) bool {
+	c.seenMu.Lock()
+	defer c.seenMu.Unlock()
+	_, ok := c.seen[link]
+	return ok
 }

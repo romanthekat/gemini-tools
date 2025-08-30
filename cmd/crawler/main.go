@@ -15,8 +15,9 @@ func main() {
 		dbDir        = flag.String("db", "data", "database root directory")
 		errorLogPath = flag.String("error-log", "error_queue.log", "path to error log file")
 		throttleMS   = flag.Int("throttle-ms", 1500, "per-host minimum interval between requests in milliseconds")
-		recrawlHours = flag.Int("recrawl-hours", 24*16, "do not recrawl a page within this many hours")
-		maxRespMB    = flag.Int("max-mb", 10, "maximum response size to save (in MB)")
+		recrawlHours = flag.Int("recrawl-hours", 24*32, "do not recrawl a page within this many hours")
+		maxRespKB    = flag.Int("max-kb", 500, "maximum response size to save (in KB)")
+		workers      = flag.Int("workers", 4, "number of concurrent workers")
 	)
 	flag.Parse()
 
@@ -26,11 +27,12 @@ func main() {
 		ErrorLogPath:  *errorLogPath,
 		Throttle:      time.Duration(*throttleMS) * time.Millisecond,
 		RecrawlWindow: time.Duration(*recrawlHours) * time.Hour,
-		MaxResponseMB: *maxRespMB,
+		MaxResponseKB: *maxRespKB,
+		Workers:       *workers,
 	}
 
-	c := crawler.New(opts)
-	if err := c.Run(context.Background()); err != nil {
+	c := crawler.New(opts, context.Background())
+	if err := c.Run(); err != nil {
 		fmt.Println("crawler error:", err)
 	}
 }

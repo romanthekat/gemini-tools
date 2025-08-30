@@ -46,6 +46,7 @@ func NewResponseEmpty() *Response {
 }
 
 // GetFullGeminiLink normalizes raw link and ensures default port for Gemini
+// TODO check if canonical url logic can be unified
 func GetFullGeminiLink(linkRaw string) (*url.URL, error) {
 	if strings.HasPrefix(linkRaw, "http") {
 		return nil, fmt.Errorf("http(s) links aren't supported")
