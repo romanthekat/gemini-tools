@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/romanthekat/gemini-tools/internal/gemini"
 )
 
 const (
@@ -175,10 +177,14 @@ func openLocal(state *State, link *url.URL) error {
 	}
 	mime := strings.ToLower(m.MIME)
 	ext := ".bin"
-	if strings.HasPrefix(mime, "text/gemini") {
+	if strings.HasPrefix(mime, gemini.GeminiMediaType) {
 		ext = ".gmi"
 	} else if strings.HasPrefix(mime, "text/") {
 		ext = ".txt"
+	} else if strings.HasPrefix(mime, "image/jpeg") {
+		ext = ".jpg"
+	} else if strings.HasPrefix(mime, "image/png") {
+		ext = ".png"
 	}
 	contentPath := filepath.Join(dbDir, host, "pages", id+ext)
 	cb, err := os.ReadFile(contentPath)
