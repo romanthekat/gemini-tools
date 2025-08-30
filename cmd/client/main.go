@@ -126,6 +126,7 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		for _, l := range state.History {
 			fmt.Printf("%s\n", l)
 		}
+		fmt.Println()
 
 		return nil, true, nil
 
