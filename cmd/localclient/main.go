@@ -94,7 +94,7 @@ func printHelp() {
 	fmt.Println("b\t\tgo back")
 	fmt.Println("q\t\tquit")
 	fmt.Println("h\t\tprint this summary")
-	fmt.Println("g\t\topen Project Gemini homepage")
+	fmt.Println("\ng\t\topen Project Gemini homepage")
 	fmt.Println("t\t\tshow top 20 sites in local DB")
 	fmt.Println("l\t\tlinks from current page and history")
 	fmt.Println()
