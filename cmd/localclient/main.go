@@ -62,7 +62,6 @@ func main() {
 
 	printHelp()
 	showTop(state)
-	fmt.Println()
 
 	for {
 		input, err := getUserInput(reader)
@@ -412,5 +411,10 @@ func showTop(state *State) error {
 		state.Links = append(state.Links, link)
 		fmt.Printf("[%d] \u001B[34m%s\u001B[0m (%d pages)\n", i+1, it.host, it.count)
 	}
+
+	if limit != 0 {
+		fmt.Println()
+	}
+
 	return nil
 }
