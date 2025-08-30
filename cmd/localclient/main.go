@@ -328,7 +328,7 @@ func appendToQueue(canon string) {
 
 // showTop lists top 20 hosts in local DB by number of saved pages
 func showTop(state *State) error {
-	entries, err := os.ReadDir(dbDir)
+	hosts, err := os.ReadDir(dbDir)
 	if err != nil {
 		return fmt.Errorf("read db dir failed: %w", err)
 	}
@@ -336,40 +336,44 @@ func showTop(state *State) error {
 		host  string
 		count int
 	}
-	items := make([]item, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
+
+	items := make([]item, 0, len(hosts))
+	for _, h := range hosts {
+		if !h.IsDir() {
 			continue
 		}
-		host := e.Name()
+		host := h.Name()
 		pagesPath := filepath.Join(dbDir, host, "pages")
-		pEntries, err := os.ReadDir(pagesPath)
+		pages, err := os.ReadDir(pagesPath)
 		if err != nil {
 			// skip hosts without pages dir
 			continue
 		}
-		cnt := 0
-		for _, pe := range pEntries {
-			if pe.IsDir() {
+
+		pagesCount := 0
+		for _, page := range pages {
+			if page.IsDir() {
 				// skip meta/ or any other directories
 				continue
 			}
-			name := pe.Name()
+			name := page.Name()
 			if strings.HasSuffix(name, ".tmp") {
 				continue
 			}
 			// meta is stored under pages/meta/, so normal page files live directly under pages/
-			cnt++
+			pagesCount++
 		}
-		if cnt > 0 {
-			items = append(items, item{host: host, count: cnt})
+		if pagesCount > 0 {
+			items = append(items, item{host: host, count: pagesCount})
 		}
 	}
+
 	if len(items) == 0 {
 		fmt.Println("No pages found in local DB")
 		state.clearLinks()
 		return nil
 	}
+
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].count == items[j].count {
 			return items[i].host < items[j].host
