@@ -327,7 +327,7 @@ func appendToQueue(canon string) {
 	_, _ = f.WriteString(canon + "\n")
 }
 
-// showTop lists top 20 hosts in local DB by number of saved pages
+// showTop lists top 25 hosts in local DB by number of saved pages
 func showTop(state *State) error {
 	hosts, err := os.ReadDir(dbDir)
 	if err != nil {
@@ -384,7 +384,7 @@ func showTop(state *State) error {
 
 	state.clearLinks()
 	fmt.Println("Top sites by pages:")
-	limit := 20
+	limit := 25
 	if len(items) < limit {
 		limit = len(items)
 	}
