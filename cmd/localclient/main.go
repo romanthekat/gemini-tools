@@ -96,6 +96,7 @@ func printHelp() {
 	fmt.Println("h\t\tprint this summary")
 	fmt.Println("g\t\topen Project Gemini homepage")
 	fmt.Println("t\t\tshow top 20 sites in local DB")
+	fmt.Println("l\t\tlinks from current page and history")
 	fmt.Println()
 }
 
@@ -133,6 +134,20 @@ func processUserInput(input string, state *State) (*url.URL, bool, error) {
 		linkRaw = state.History[len(state.History)-2]
 		state.History = state.History[:len(state.History)-2]
 		fmt.Println(">", linkRaw)
+	case "l":
+		fmt.Println("Links:")
+		for i, l := range state.Links {
+			fmt.Printf("[%d] \u001B[34m%s\033[0m\n", i+1, l)
+			//fmt.Printf("[%d] \u001B[34m%s\033[0m\n", len(state.Links), linkNum) //blue
+		}
+
+		fmt.Println("\nHistory:")
+		for _, l := range state.History {
+			fmt.Printf("%s\n", l)
+		}
+
+		return nil, true, nil
+
 	default:
 		// Treat it as link number first
 		if idx, err := strconv.Atoi(input); err == nil {
