@@ -14,7 +14,7 @@ func main() {
 		queuePath    = flag.String("queue", "queue.txt", "path to queue file (one URL per line)")
 		dbDir        = flag.String("db", "data", "database root directory")
 		errorLogPath = flag.String("error-log", "error_queue.log", "path to error log file")
-		throttleMS   = flag.Int("throttle-ms", 2000, "per-host minimum interval between requests in milliseconds")
+		throttleMS   = flag.Int("throttle-ms", 1500, "per-host minimum interval between requests in milliseconds")
 		recrawlHours = flag.Int("recrawl-hours", 72, "do not recrawl a page within this many hours")
 		maxRespMB    = flag.Int("max-mb", 10, "maximum response size to save (in MB)")
 	)

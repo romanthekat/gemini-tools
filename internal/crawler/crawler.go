@@ -24,11 +24,11 @@ import (
 //  - DBDir: "data"
 //  - QueuePath: "queue.txt"
 //  - ErrorLogPath: "error_queue.log"
-//  - Throttle: 2s
+//  - Throttle: 1.5s
 //  - RecrawlWindow: 72h
 //  - MaxResponseMB: 10 (soft cap)
 //
-// Single-pass queue processing as per docs/crawler_plan.md
+// Single-pass queue processing
 
 type Options struct {
 	DBDir         string
@@ -57,7 +57,7 @@ func New(opts Options) *Crawler {
 		opts.ErrorLogPath = "error_queue.log"
 	}
 	if opts.Throttle == 0 {
-		opts.Throttle = 2 * time.Second
+		opts.Throttle = 1500 * time.Millisecond
 	}
 	if opts.RecrawlWindow == 0 {
 		opts.RecrawlWindow = 72 * time.Hour
@@ -72,6 +72,8 @@ func New(opts Options) *Crawler {
 	}
 }
 
+const PermissionsFull = 0o755
+
 type pageMeta struct {
 	URL         string    `json:"url"`
 	LastCrawled time.Time `json:"last_crawled"`
@@ -83,61 +85,51 @@ type pageMeta struct {
 
 // Run processes the queue and continues while new items are added (single worker)
 func (c *Crawler) Run(ctx context.Context) error {
-	qf, err := os.Open(c.opts.QueuePath)
+	queueFile, err := os.Open(c.opts.QueuePath)
 	if err != nil {
 		return fmt.Errorf("open queue: %w", err)
 	}
-	defer qf.Close()
+	defer queueFile.Close()
 
-	if err := os.MkdirAll(c.opts.DBDir, 0o755); err != nil {
+	if err := os.MkdirAll(c.opts.DBDir, PermissionsFull); err != nil {
 		return fmt.Errorf("mkdir db: %w", err)
 	}
 
 	// Load initial queue into memory
-	work := make([]string, 0, 1024)
-	scanner := bufio.NewScanner(qf)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		work = append(work, line)
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scan queue: %w", err)
+	queue, err := c.getQueue(queueFile)
+	if err != nil {
+		return err
 	}
 
-	remaining := func(cur int) int { return len(work) - cur - 1 }
+	remaining := func(current int) int { return len(queue) - current - 1 }
 
-	for i := 0; i < len(work); i++ {
+	for itemNum := 0; itemNum < len(queue); itemNum++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		raw := strings.TrimSpace(work[i])
-		u, canon, err := c.normalizeURL(raw)
+		linkUrl, canonicalLink, err := c.normalizeURL(queue[itemNum])
 		if err != nil {
 			// not a valid gemini URL, skip silently
 			continue
 		}
-		if _, ok := c.seen[canon]; ok {
+		if _, ok := c.seen[canonicalLink]; ok {
 			// already processed/queued in this run
 			continue
 		}
-		c.seen[canon] = struct{}{}
+		c.seen[canonicalLink] = struct{}{}
 
-		host, id := pageID(u)
+		host, id := pageID(linkUrl)
 		should, err := c.shouldFetch(host, id)
 		if err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
-			c.logError(canon, err)
+			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
+			c.logError(canonicalLink, err)
 			continue
 		}
 		if !should {
-			fmt.Printf("skip recent: %s (remaining %d)\n", canon, remaining(i))
+			fmt.Printf("skip - to early to refresh: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
 			continue
 		}
 
@@ -145,53 +137,53 @@ func (c *Crawler) Run(ctx context.Context) error {
 			return err
 		}
 
-		fmt.Printf("fetching: %s (remaining %d)\n", canon, remaining(i))
+		fmt.Printf("fetching: %s (remaining %d)\n", canonicalLink, remaining(itemNum))
 
 		// Ensure URL for request contains default port
-		reqURL, err := gemini.GetFullGeminiLink(u.String())
+		reqURL, err := gemini.GetFullGeminiLink(linkUrl.String())
 		if err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
-			c.logError(canon, err)
-			_ = c.writeErrorMeta(host, id, u, "canon-error", 0)
+			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
+			c.logError(canonicalLink, err)
+			_ = c.writeErrorMeta(host, id, linkUrl, "canonicalLink-error", 0)
 			continue
 		}
 
 		resp, err := gemini.DoRequest(reqURL)
 		if err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
-			c.logError(canon, err)
-			_ = c.writeErrorMeta(host, id, u, "request-error", 0)
+			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
+			c.logError(canonicalLink, err)
+			_ = c.writeErrorMeta(host, id, linkUrl, "request-error", 0)
 			continue
 		}
 
 		if resp.Status != gemini.StatusSuccess {
-			fmt.Printf("error: %s status %d: %s (remaining %d)\n", canon, resp.Status, resp.Meta, remaining(i))
-			c.logError(canon, fmt.Errorf("status %d: %s", resp.Status, resp.Meta))
-			_ = c.writeErrorMeta(host, id, u, fmt.Sprintf("status-%d", resp.Status), len(resp.Body))
+			fmt.Printf("error: %s status %d: %s (remaining %d)\n", canonicalLink, resp.Status, resp.Meta, remaining(itemNum))
+			c.logError(canonicalLink, fmt.Errorf("status %d: %s", resp.Status, resp.Meta))
+			_ = c.writeErrorMeta(host, id, linkUrl, fmt.Sprintf("status-%d", resp.Status), len(resp.Body))
 			continue
 		}
 
 		mime := resp.Meta
 		if max := c.opts.MaxResponseMB; max > 0 && len(resp.Body) > max*1024*1024 {
 			err := fmt.Errorf("response too large: %d bytes", len(resp.Body))
-			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
-			c.logError(canon, err)
-			_ = c.writeErrorMeta(host, id, u, "too-large", len(resp.Body))
+			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
+			c.logError(canonicalLink, err)
+			_ = c.writeErrorMeta(host, id, linkUrl, "too-large", len(resp.Body))
 			continue
 		}
 
-		if err := c.savePage(host, id, u, mime, resp.Body); err != nil {
-			fmt.Printf("error: %s %v (remaining %d)\n", canon, err, remaining(i))
-			c.logError(canon, err)
-			_ = c.writeErrorMeta(host, id, u, "save-error", len(resp.Body))
+		if err := c.savePage(host, id, linkUrl, mime, resp.Body); err != nil {
+			fmt.Printf("error: %s %v (remaining %d)\n", canonicalLink, err, remaining(itemNum))
+			c.logError(canonicalLink, err)
+			_ = c.writeErrorMeta(host, id, linkUrl, "save-error", len(resp.Body))
 			continue
 		}
 
-		fmt.Printf("saved: %s/%s %s %dB (remaining %d)\n", host, id, mime, len(resp.Body), remaining(i))
+		fmt.Printf("saved: %s/%s %s %dB (remaining %d)\n", host, id, mime, len(resp.Body), remaining(itemNum))
 
 		// Extract and append links for gemtext only
 		if strings.HasPrefix(strings.ToLower(mime), gemini.GeminiMediaType) {
-			links := extractLinks(u, resp.Body)
+			links := extractLinks(linkUrl, resp.Body)
 			added := 0
 			if len(links) > 0 {
 				toAdd := make([]string, 0, len(links))
@@ -201,17 +193,36 @@ func (c *Crawler) Run(ctx context.Context) error {
 					}
 					c.seen[l] = struct{}{}
 					toAdd = append(toAdd, l)
-					work = append(work, l)
+					queue = append(queue, l)
 				}
 				if len(toAdd) > 0 {
 					c.appendToQueueDedup(toAdd)
 					added = len(toAdd)
 				}
 			}
-			fmt.Printf("discovered %d links (added %d), remaining %d\n", len(links), added, remaining(i))
+			fmt.Printf("discovered %d links (added %d), remaining %d\n", len(links), added, remaining(itemNum))
 		}
 	}
 	return nil
+}
+
+func (c *Crawler) getQueue(queueFile *os.File) ([]string, error) {
+	queue := make([]string, 0, 1024)
+	scanner := bufio.NewScanner(queueFile)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		queue = append(queue, line)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan queue: %w", err)
+	}
+
+	return queue, nil
 }
 
 // normalizeURL ensures gemini scheme, lowercased host, no fragment, non-empty path
@@ -267,8 +278,8 @@ func pageID(u *url.URL) (host, id string) {
 	if h, p, ok := strings.Cut(host, ":"); ok && (p == gemini.Port) {
 		host = h
 	}
-	canon := canonicalString(u)
-	h := sha256.Sum256([]byte(canon))
+	canonicalLink := canonicalString(u)
+	h := sha256.Sum256([]byte(canonicalLink))
 	hash := hex.EncodeToString(h[:])
 	slug := slugFromPath(u.Path)
 	id = fmt.Sprintf("%s__%s", slug, hash)
@@ -317,19 +328,20 @@ func (c *Crawler) contentPath(host, id, mime string) string {
 }
 
 func (c *Crawler) shouldFetch(host, id string) (bool, error) {
-	mp := c.metaPath(host, id)
-	b, err := os.ReadFile(mp)
+	metaPath := c.metaPath(host, id)
+	bytes, err := os.ReadFile(metaPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return true, nil
 		}
 		return false, err
 	}
-	var m pageMeta
-	if err := json.Unmarshal(b, &m); err != nil {
+
+	var meta pageMeta
+	if err := json.Unmarshal(bytes, &meta); err != nil {
 		return true, nil // malformed meta, try fetching anew
 	}
-	if time.Since(m.LastCrawled) < c.opts.RecrawlWindow {
+	if time.Since(meta.LastCrawled) < c.opts.RecrawlWindow {
 		return false, nil
 	}
 	return true, nil
@@ -353,7 +365,7 @@ func (c *Crawler) throttle(host string) error {
 }
 
 func (c *Crawler) savePage(host, id string, u *url.URL, mime string, body []byte) error {
-	if err := os.MkdirAll(c.pagesDir(host), 0o755); err != nil {
+	if err := os.MkdirAll(c.pagesDir(host), PermissionsFull); err != nil {
 		return err
 	}
 	cp := c.contentPath(host, id, mime)
@@ -375,7 +387,7 @@ func (c *Crawler) savePage(host, id string, u *url.URL, mime string, body []byte
 	mb, _ := json.MarshalIndent(&m, "", "  ")
 	mp := c.metaPath(host, id)
 	// ensure meta directory exists
-	if err := os.MkdirAll(filepath.Dir(mp), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mp), PermissionsFull); err != nil {
 		return err
 	}
 	mtp := mp + ".tmp"
@@ -386,7 +398,7 @@ func (c *Crawler) savePage(host, id string, u *url.URL, mime string, body []byte
 }
 
 func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, size int) error {
-	if err := os.MkdirAll(c.pagesDir(host), 0o755); err != nil {
+	if err := os.MkdirAll(c.pagesDir(host), PermissionsFull); err != nil {
 		return err
 	}
 	m := pageMeta{
@@ -400,7 +412,7 @@ func (c *Crawler) writeErrorMeta(host, id string, u *url.URL, status string, siz
 	mb, _ := json.MarshalIndent(&m, "", "  ")
 	mp := c.metaPath(host, id)
 	// ensure meta directory exists
-	if err := os.MkdirAll(filepath.Dir(mp), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mp), PermissionsFull); err != nil {
 		return err
 	}
 	mtp := mp + ".tmp"
@@ -463,7 +475,7 @@ func (c *Crawler) appendToQueueDedup(urls []string) {
 }
 
 func (c *Crawler) logError(urlStr string, err error) {
-	_ = os.MkdirAll(filepath.Dir(c.opts.ErrorLogPath), 0o755)
+	_ = os.MkdirAll(filepath.Dir(c.opts.ErrorLogPath), PermissionsFull)
 	f, ferr := os.OpenFile(c.opts.ErrorLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if ferr != nil {
 		return
