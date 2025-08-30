@@ -79,7 +79,7 @@ func printHelp() {
 }
 
 func getUserInput(reader *bufio.Reader) (string, error) {
-	fmt.Print("> ")
+	fmt.Print("🔴➡ ")
 	input, err := reader.ReadString('\n')
 	if err != nil {
 		return "", err
